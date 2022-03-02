@@ -94,6 +94,7 @@ struct lo_data {
 	const char *source;
 	double timeout;
 	int cache;
+	int no_dio_flush; /* disable flush for files with direct-io */
 	int timeout_set;
 	struct lo_inode root; /* protected by lo->mutex */
 };
@@ -123,6 +124,8 @@ static const struct fuse_opt lo_opts[] = {
 	  offsetof(struct lo_data, cache), CACHE_NORMAL },
 	{ "cache=always",
 	  offsetof(struct lo_data, cache), CACHE_ALWAYS },
+	{ "no_dio_flush",
+	  offsetof(struct lo_data, no_dio_flush), 1 },
 
 	FUSE_OPT_END
 };
@@ -141,7 +144,10 @@ static void passthrough_ll_help(void)
 "    -o timeout=0/1         Timeout is set\n"
 "    -o cache=never         Disable cache\n"
 "    -o cache=auto          Auto enable cache\n"
-"    -o cache=always        Cache always\n");
+"    -o cache=always        Cache always\n"
+"    -o no_dio_flush        Disable fuse kernel flush with\n"
+"                           direct-io. Saves kernel/user space\n"
+"                           round trips\n");
 }
 
 static struct lo_data *lo_data(fuse_req_t req)
@@ -814,6 +820,10 @@ static void lo_create(fuse_req_t req, fuse_ino_t parent, const char *name,
 	else if (lo->cache == CACHE_ALWAYS)
 		fi->keep_cache = 1;
 
+	/* files that are opened in direct-io mode do not need kernel flush */
+	if (lo->no_dio_flush && (fi->direct_io || fi->flags & O_DIRECT))
+		fi->noflush = 1;
+
 	err = lo_do_lookup(req, parent, name, &e);
 	if (err)
 		fuse_reply_err(req, err);
@@ -867,6 +877,11 @@ static bool lo_do_open(fuse_req_t req, fuse_ino_t ino,
 		fi->direct_io = 1;
 	else if (lo->cache == CACHE_ALWAYS)
 		fi->keep_cache = 1;
+
+	/* files that are opened in direct-io mode do not need kernel flush */
+	if (lo->no_dio_flush && (fi->direct_io || fi->flags & O_DIRECT))
+		fi->noflush = 1;
+
 	return true;
 }
 
@@ -886,16 +901,34 @@ static void lo_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 
 static void lo_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
+	int res = 0;
 	(void) ino;
 
+	if (fi->noflush) {
+		bool is_write_open = ((fi->flags & O_ACCMODE) == O_WRONLY ||
+				      (fi->flags & O_ACCMODE) == O_RDWR);
+		if (is_write_open && !(fi->flags & O_DIRECT)) {
+			/* Try an async flush, as fuse kernel did not not send
+			 * a separate flush request.
+			 * This could be otional.
+			 */
+			res = close(dup(fi->fh));
+		}
+	}
+
 	close(fi->fh);
-	fuse_reply_err(req, 0);
+	fuse_reply_err(req, res == -1 ? errno : 0);
 }
 
 static void lo_flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
 	int res;
 	(void) ino;
+
+	/* posix does not imply flush, although some file systems do it, like
+	 * NFS. This construct is supposed to flush?
+	 * Use sync_file_range(fi->fh, 0, 0, 0) on linux?
+	 */
 	res = close(dup(fi->fh));
 	fuse_reply_err(req, res == -1 ? errno : 0);
 }
