@@ -92,10 +92,12 @@ struct lo_data {
 	int flock;
 	int xattr;
 	const char *source;
-	double timeout;
+	double file_timeout; /* timeout for all file types */
+	double dir_timeout;  /* timeout for directories */
 	int cache;
 	int no_dio_flush; /* disable flush for files with direct-io */
-	int timeout_set;
+	int file_timeout_set;
+	int dir_timeout_set;
 	struct lo_inode root; /* protected by lo->mutex */
 };
 
@@ -114,10 +116,14 @@ static const struct fuse_opt lo_opts[] = {
 	  offsetof(struct lo_data, xattr), 1 },
 	{ "no_xattr",
 	  offsetof(struct lo_data, xattr), 0 },
-	{ "timeout=%lf",
-	  offsetof(struct lo_data, timeout), 0 },
-	{ "timeout=",
-	  offsetof(struct lo_data, timeout_set), 1 },
+	{ "file_timeout=%lf",
+	  offsetof(struct lo_data, file_timeout), 0 },
+	{ "file_timeout=",
+	  offsetof(struct lo_data, file_timeout_set), 1 },
+	{ "dir_timeout=%lf",
+	  offsetof(struct lo_data, dir_timeout), 0 },
+	{ "dir_timeout=",
+	  offsetof(struct lo_data, dir_timeout_set), 1 },
 	{ "cache=never",
 	  offsetof(struct lo_data, cache), CACHE_NEVER },
 	{ "cache=auto",
@@ -140,7 +146,8 @@ static void passthrough_ll_help(void)
 "    -o no_flock            Disable flock\n"
 "    -o xattr               Enable xattr\n"
 "    -o no_xattr            Disable xattr\n"
-"    -o timeout=1.0         Caching timeout\n"
+"    -o file_timeout=<>	    File caching timeout in seconds (example: 0.1)\n"
+"    -o dir_timeout=<>      Firectory caching timeout in seconds (example: 0.5)\n"
 "    -o timeout=0/1         Timeout is set\n"
 "    -o cache=never         Disable cache\n"
 "    -o cache=auto          Auto enable cache\n"
@@ -211,6 +218,7 @@ static void lo_getattr(fuse_req_t req, fuse_ino_t ino,
 	int res;
 	struct stat buf;
 	struct lo_data *lo = lo_data(req);
+	double timeout;
 
 	(void) fi;
 
@@ -218,7 +226,10 @@ static void lo_getattr(fuse_req_t req, fuse_ino_t ino,
 	if (res == -1)
 		return (void) fuse_reply_err(req, errno);
 
-	fuse_reply_attr(req, &buf, lo->timeout);
+	timeout = ((buf.st_mode & S_IFMT) == S_IFDIR) ?
+			lo->dir_timeout : lo->file_timeout;
+
+	fuse_reply_attr(req, &buf, timeout);
 }
 
 static void lo_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
@@ -324,8 +335,8 @@ static int lo_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
 	struct lo_inode *inode;
 
 	memset(e, 0, sizeof(*e));
-	e->attr_timeout = lo->timeout;
-	e->entry_timeout = lo->timeout;
+	e->attr_timeout = lo->file_timeout;
+	e->entry_timeout = lo->file_timeout;
 
 	newfd = openat(lo_fd(req, parent), name, O_PATH | O_NOFOLLOW);
 	if (newfd == -1)
@@ -334,6 +345,11 @@ static int lo_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
 	res = fstatat(newfd, "", &e->attr, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
 	if (res == -1)
 		goto out_err;
+
+	if ((e->attr.st_mode & S_IFMT) == S_IFDIR) {
+		e->attr_timeout = lo->dir_timeout;
+		e->entry_timeout = lo->dir_timeout;
+	}
 
 	inode = lo_find(lo_data(req), &e->attr);
 	if (inode) {
@@ -488,8 +504,8 @@ static void lo_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent,
 	int saverr;
 
 	memset(&e, 0, sizeof(struct fuse_entry_param));
-	e.attr_timeout = lo->timeout;
-	e.entry_timeout = lo->timeout;
+	e.attr_timeout = lo->file_timeout;
+	e.entry_timeout = lo->file_timeout;
 
 	sprintf(procname, "/proc/self/fd/%i", inode->fd);
 	res = linkat(AT_FDCWD, procname, lo_fd(req, parent), name,
@@ -1326,25 +1342,27 @@ int main(int argc, char *argv[])
 	} else {
 		lo.source = "/";
 	}
-	if (!lo.timeout_set) {
+	if (!lo.file_timeout_set) {
 		switch (lo.cache) {
 		case CACHE_NEVER:
-			lo.timeout = 0.0;
+			lo.file_timeout = 0.0;
 			break;
 
 		case CACHE_NORMAL:
-			lo.timeout = 1.0;
+			lo.file_timeout = 1.0;
 			break;
 
 		case CACHE_ALWAYS:
-			lo.timeout = 86400.0;
+			lo.file_timeout = 86400.0;
 			break;
 		}
-	} else if (lo.timeout < 0) {
+	} else if (lo.file_timeout < 0) {
 		fuse_log(FUSE_LOG_ERR, "timeout is negative (%lf)\n",
-			 lo.timeout);
+			 lo.file_timeout);
 		exit(1);
 	}
+	if (!lo.dir_timeout_set)
+		lo.dir_timeout = lo.file_timeout;
 
 	lo.root.fd = open(lo.source, O_PATH);
 	if (lo.root.fd == -1) {
