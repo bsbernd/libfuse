@@ -96,6 +96,7 @@ struct lo_data {
 	double dir_timeout;  /* timeout for directories */
 	int cache;
 	int no_dio_flush; /* disable flush for files with direct-io */
+	int no_atomic_open; /* disable flush for files with direct-io */
 	int file_timeout_set;
 	int dir_timeout_set;
 	struct lo_inode root; /* protected by lo->mutex */
@@ -132,9 +133,13 @@ static const struct fuse_opt lo_opts[] = {
 	  offsetof(struct lo_data, cache), CACHE_ALWAYS },
 	{ "no_dio_flush",
 	  offsetof(struct lo_data, no_dio_flush), 1 },
+	{ "no_atomic_open",
+	  offsetof(struct lo_data, no_atomic_open), 1 },
 
 	FUSE_OPT_END
 };
+
+static void unref_inode(struct lo_data *lo, struct lo_inode *inode, uint64_t n);
 
 static void passthrough_ll_help(void)
 {
@@ -154,7 +159,8 @@ static void passthrough_ll_help(void)
 "    -o cache=always        Cache always\n"
 "    -o no_dio_flush        Disable fuse kernel flush with\n"
 "                           direct-io. Saves kernel/user space\n"
-"                           round trips\n");
+"                           round trips\n"
+"    -o no_atomic_open      Disable atomic open\n");
 }
 
 static struct lo_data *lo_data(fuse_req_t req)
@@ -1236,7 +1242,7 @@ static void lo_lseek(fuse_req_t req, fuse_ino_t ino, off_t off, int whence,
 		fuse_reply_err(req, errno);
 }
 
-static const struct fuse_lowlevel_ops lo_oper = {
+static struct fuse_lowlevel_ops lo_oper = {
 	.init		= lo_init,
 	.destroy	= lo_destroy,
 	.lookup		= lo_lookup,
@@ -1363,6 +1369,9 @@ int main(int argc, char *argv[])
 	}
 	if (!lo.dir_timeout_set)
 		lo.dir_timeout = lo.file_timeout;
+
+	if (lo.no_atomic_open)
+		lo_oper.atomic_open = NULL;
 
 	lo.root.fd = open(lo.source, O_PATH);
 	if (lo.root.fd == -1) {
