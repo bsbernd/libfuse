@@ -154,6 +154,7 @@ struct Fs {
     dev_t src_dev;
     bool nosplice;
     bool nocache;
+    bool no_atomic_open;
 };
 static Fs fs{};
 
@@ -821,7 +822,7 @@ static void sfs_fsyncdir(fuse_req_t req, fuse_ino_t ino, int datasync,
 }
 
 
-static void sfs_open(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi) {
+static int _sfs_open(fuse_ino_t ino, fuse_file_info *fi) {
     Inode& inode = get_inode(ino);
 
     /* With writeback cache, kernel may send read requests even
@@ -846,11 +847,7 @@ static void sfs_open(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi) {
     sprintf(buf, "/proc/self/fd/%i", inode.fd);
     auto fd = open(buf, fi->flags & ~O_NOFOLLOW);
     if (fd == -1) {
-        auto err = errno;
-        if (err == ENFILE || err == EMFILE)
-            cerr << "ERROR: Reached maximum number of file descriptors." << endl;
-        fuse_reply_err(req, err);
-        return;
+        return errno;
     }
 
     lock_guard<mutex> g {inode.m};
@@ -858,7 +855,51 @@ static void sfs_open(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi) {
     fi->keep_cache = (fs.timeout != 0);
     fi->noflush = (fs.timeout == 0 && (fi->flags & O_ACCMODE) == O_RDONLY);
     fi->fh = fd;
+
+    return 0;
+}
+
+static void sfs_open(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi) {
+    int rc = _sfs_open(ino, fi);
+    if (rc != 0) {
+        if (rc == ENFILE || rc == EMFILE)
+            cerr << "ERROR: Reached maximum number of file descriptors." << endl;
+        fuse_reply_err(req, rc);
+        return;
+    }
+
     fuse_reply_open(req, fi);
+}
+
+static void sfs_atomic_open(fuse_req_t req, fuse_ino_t parent,
+                            const char *name, struct fuse_file_info *fi) {
+    int rc, saveerr;
+    fuse_entry_param e;
+
+    rc = do_lookup(parent, name, &e);
+    if (rc != 0) {
+        saveerr = rc;
+        goto out_err;
+    }
+
+    rc = _sfs_open(e.ino, fi);
+    if (rc != 0) {
+        saveerr = rc;
+
+        if (rc == ENFILE || rc == EMFILE)
+            cerr << "ERROR: Reached maximum number of file descriptors." << endl;
+
+        forget_one(e.ino, 1);
+
+        goto out_err;
+    }
+
+    fuse_reply_create(req, &e, fi);
+    return;
+
+out_err:
+    fuse_reply_err(req, saveerr);
+
 }
 
 
@@ -1105,6 +1146,10 @@ static void assign_operations(fuse_lowlevel_ops &sfs_oper) {
     sfs_oper.fsyncdir = sfs_fsyncdir;
     sfs_oper.create = sfs_create;
     sfs_oper.open = sfs_open;
+
+    if (!fs.no_atomic_open)
+        sfs_oper.atomic_open = sfs_atomic_open;
+
     sfs_oper.release = sfs_release;
     sfs_oper.flush = sfs_flush;
     sfs_oper.fsync = sfs_fsync;
@@ -1147,7 +1192,8 @@ static cxxopts::ParseResult parse_options(int argc, char **argv) {
         ("help", "Print help")
         ("nocache", "Disable all caching")
         ("nosplice", "Do not use splice(2) to transfer data")
-        ("single", "Run single-threaded");
+        ("single", "Run single-threaded")
+        ("no_atomic_open", "Disable atomic file opens - more lookup calls");
 
     // FIXME: Find a better way to limit the try clause to just
     // opt_parser.parse() (cf. https://github.com/jarro2783/cxxopts/issues/146)
@@ -1170,6 +1216,9 @@ static cxxopts::ParseResult parse_options(int argc, char **argv) {
 
     fs.debug = options.count("debug") != 0;
     fs.nosplice = options.count("nosplice") != 0;
+    fs.nocache =  options.count("nocache") != 0;
+    fs.no_atomic_open =  options.count("no_atomic_open") != 0;
+
     char* resolved_path = realpath(argv[1], NULL);
     if (resolved_path == NULL)
         warn("WARNING: realpath() failed with");

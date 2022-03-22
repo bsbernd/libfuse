@@ -416,6 +416,9 @@ int fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param *e)
 	return send_reply_ok(req, &arg, size);
 }
 
+/**
+ * Also called by atomic_open
+ */
 int fuse_reply_create(fuse_req_t req, const struct fuse_entry_param *e,
 		      const struct fuse_file_info *f)
 {
