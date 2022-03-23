@@ -201,13 +201,11 @@ static void sfs_init(void *userdata, fuse_conn_info *conn) {
     if (conn->capable & FUSE_CAP_FLOCK_LOCKS)
         conn->want |= FUSE_CAP_FLOCK_LOCKS;
 
-    // Use splicing if supported. Since we are using writeback caching
-    // and readahead, individual requests should have a decent size so
-    // that splicing between fd's is well worth it.
-    if (conn->capable & FUSE_CAP_SPLICE_WRITE && !fs.nosplice)
-        conn->want |= FUSE_CAP_SPLICE_WRITE;
-    if (conn->capable & FUSE_CAP_SPLICE_READ && !fs.nosplice)
-        conn->want |= FUSE_CAP_SPLICE_READ;
+    // splice is enabled in libfuse3 by default
+    if (fs.nosplice) {
+        conn->want &= ~FUSE_CAP_SPLICE_READ;
+        conn->want &= ~FUSE_CAP_SPLICE_WRITE;
+    }
 }
 
 
