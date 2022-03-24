@@ -155,7 +155,7 @@ static void *fuse_do_work(void *data)
 
 		if (!isforget)
 			mt->numavail--;
-		if (mt->numavail == 0)
+		if (mt->numavail == 0 && mt->numworker < mt->max_idle)
 			fuse_loop_start_thread(mt);
 		pthread_mutex_unlock(&mt->lock);
 
@@ -164,6 +164,14 @@ static void *fuse_do_work(void *data)
 		pthread_mutex_lock(&mt->lock);
 		if (!isforget)
 			mt->numavail++;
+#if 0
+		/* creating and destroying threads is rather expensive - and there is
+		 * not much gain from destroying existing threads. If there should be
+		 * indeed a use case for thread destruction, the logic should be extended
+		 * to include something like a moving average and then to destroy
+		 * threads based on thread idle time or based on average number of busy
+		 * threads in time intervals.
+		 */
 		if (mt->numavail > mt->max_idle) {
 			if (mt->exit) {
 				pthread_mutex_unlock(&mt->lock);
@@ -180,6 +188,7 @@ static void *fuse_do_work(void *data)
 			free(w);
 			return NULL;
 		}
+#endif
 		pthread_mutex_unlock(&mt->lock);
 	}
 
