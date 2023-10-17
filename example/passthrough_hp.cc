@@ -975,21 +975,13 @@ retry:
         fi->fh = reinterpret_cast<uint64_t>(dh);
     }
 
-    if ((e.attr.st_mode & S_IFMT) == S_IFLNK) {
-            /* symlink not supported in atomic open
-             * TODO: transfer the attributes
-             */
-            sfs_atomic_open_error(nullptr, e, fd, req, ELOOP);
-            return;
-    }
-
     // cerr << "node-id=" << e.ino << " gen=" << e.generation << endl;
 
     Inode& inode = get_inode(e.ino);
     lock_guard<mutex> g {inode.m};
     inode.nopen++;
 
-    fuse_reply_create(req, &e, fi);
+    fuse_reply_atomic_open(req, &e, fi);
 }
 
 

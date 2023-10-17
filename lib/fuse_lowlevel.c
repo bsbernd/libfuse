@@ -443,7 +443,7 @@ int fuse_reply_create(fuse_req_t req, const struct fuse_entry_param *e,
 			     entrysize + sizeof(struct fuse_open_out));
 }
 
-int fuse_reply_open_atomic(fuse_req_t req, const struct fuse_entry_param *e,
+int fuse_reply_atomic_open(fuse_req_t req, const struct fuse_entry_param *e,
 			   const struct fuse_file_info *f)
 {
 	return fuse_reply_create(req, e, f);

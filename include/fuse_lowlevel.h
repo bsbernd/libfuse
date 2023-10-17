@@ -1389,7 +1389,7 @@ int fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param *e);
  * @param fi file information
  * @return zero for success, -errno for failure to send reply
  */
-int fuse_reply_open_atomic(fuse_req_t req, const struct fuse_entry_param *e,
+int fuse_reply_atomic_open(fuse_req_t req, const struct fuse_entry_param *e,
 			   const struct fuse_file_info *fi);
 
 /**
