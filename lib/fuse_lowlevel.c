@@ -2771,6 +2771,16 @@ _do_init(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 	else if (arg->minor < 23)
 		outargsize = FUSE_COMPAT_22_INIT_OUT_SIZE;
 
+	if (enable_io_uring) {
+		if (se->uring.q_depth == 0) {
+			fuse_log(
+				FUSE_LOG_ERR,
+				"Disabling io-uring, q-depth=0 is not valid\n");
+			enable_io_uring = false;
+			outargflags &= ~FUSE_OVER_IO_URING;
+		}
+	}
+
 	send_reply_ok(req, &outarg, outargsize);
 
 	/* XXX: Split the start, and send SQEs only after send_reply_ok() */

@@ -1534,12 +1534,13 @@ int main(int argc, char *argv[]) {
         (fs.debug_fuse && fuse_opt_add_arg(&args, "-odebug")))
         errx(3, "ERROR: Out of memory adding arguments");
 
-    if (fs.uring.enable) {
-        if (fuse_opt_add_arg(&args, "-oio_uring") ||
-            fuse_opt_add_arg(&args, ("-oio_uring_q_depth=" +
+    if (fs.uring.enable && fuse_opt_add_arg(&args, "-oio_uring"))
+        errx(3, "ERROR: Out of memory adding io-uring arguments");
+
+    if (fs.uring.enable && fs.uring.queue_depth > 0 &&
+        fuse_opt_add_arg(&args, ("-oio_uring_q_depth=" +
             std::to_string(fs.uring.queue_depth)).c_str()))
-            errx(3, "ERROR: Out of memory adding io-uring arguments");
-    }
+        errx(3, "ERROR: Out of memory adding io-uring queue depth");
 
     ret = -1;
     fuse_lowlevel_ops sfs_oper {};
