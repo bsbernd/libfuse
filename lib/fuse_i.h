@@ -63,6 +63,13 @@ struct fuse_notify_req {
 struct fuse_session_uring {
 	bool enable;
 	unsigned int q_depth;
+
+	/* number of queues, default is 1 per core */
+	unsigned int nr_queues;
+
+	/* core mask for queue selection */
+	char *q_mask;
+
 	struct fuse_ring_pool *pool;
 };
 
