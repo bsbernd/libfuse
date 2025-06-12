@@ -2788,7 +2788,8 @@ _do_init(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 			se->conn.capable_ext |= FUSE_CAP_OVER_IO_URING;
 		if (inargflags & FUSE_ALLOW_IDMAP)
 			se->conn.capable_ext |= FUSE_CAP_ALLOW_IDMAP;
-
+		if (inargflags & FUSE_URING_REDUCED_Q)
+			se->uring.reduced_queues = 1;
 	} else {
 		se->conn.max_readahead = 0;
 	}
@@ -2954,6 +2955,10 @@ _do_init(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 		outarg.request_timeout = se->conn.request_timeout;
 	}
 
+	if (inargflags & FUSE_URING_REDUCED_Q) {
+		outargflags |= FUSE_URING_REDUCED_Q;
+	}
+
 	outarg.max_readahead = se->conn.max_readahead;
 	outarg.max_write = se->conn.max_write;
 	if (se->conn.proto_minor >= 13) {
@@ -3000,7 +3005,7 @@ _do_init(fuse_req_t req, const fuse_ino_t nodeid, const void *op_in,
 		if (ring_rc != 0) {
 			fuse_log(FUSE_LOG_INFO,
 				 "fuse: failed to start io-uring: %s\n",
-				 strerror(ring_rc));
+				 strerror(-ring_rc));
 			outargflags &= ~FUSE_OVER_IO_URING;
 			enable_io_uring = false;
 		}
@@ -3860,6 +3865,8 @@ static const struct fuse_opt fuse_ll_opts[] = {
 	LL_OPTION("allow_root", deny_others, 1),
 	LL_OPTION("io_uring", uring.enable, 1),
 	LL_OPTION("io_uring_q_depth=%u", uring.q_depth, -1),
+	LL_OPTION("io_uring_nr_qs=%u", uring.nr_queues, -1),
+	LL_OPTION("io_uring_q_mask=%s", uring.q_mask, -1),
 	FUSE_OPT_END
 };
 
@@ -3874,13 +3881,13 @@ void fuse_lowlevel_help(void)
 {
 	/* These are not all options, but the ones that are
 	   potentially of interest to an end-user */
-	printf(
-"    -o allow_other         allow access by all users\n"
-"    -o allow_root          allow access by root\n"
-"    -o auto_unmount        auto unmount on process termination\n"
-"    -o io_uring            enable io-uring\n"
-"    -o io_uring_q_depth=<n> io-uring queue depth\n"
-);
+	printf("    -o allow_other         allow access by all users\n"
+	       "    -o allow_root          allow access by root\n"
+	       "    -o auto_unmount        auto unmount on process termination\n"
+	       "    -o io_uring            enable io-uring\n"
+	       "    -o io_uring_q_depth=<n> io-uring queue depth\n"
+	       "    -o io_uring_nr_qs=<n>   io-uring number of queues\n"
+	       "    -o io_uring_q_mask=<s>  io-uring queue mask (0x...) or '1:2:3-5'\n");
 }
 
 void fuse_session_destroy(struct fuse_session *se)
@@ -4244,6 +4251,8 @@ fuse_session_new_versioned(struct fuse_args *args,
 	se->uring.q_depth = getenv("FUSE_URING_QUEUE_DEPTH") ?
 				    atoi(getenv("FUSE_URING_QUEUE_DEPTH")) :
 				    SESSION_DEF_URING_Q_DEPTH;
+	se->uring.nr_queues = UINT_MAX;
+	se->uring.q_mask = NULL;
 
 	/* Parse options */
 	if(fuse_opt_parse(args, se, fuse_ll_opts, NULL) == -1)
