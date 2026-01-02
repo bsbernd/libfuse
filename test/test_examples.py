@@ -251,7 +251,7 @@ def test_passthrough_hp(short_tmpdir, cache, output_checker):
 
     if not cache:
         cmdline.append('--nocache')
-        
+
     mount_process = subprocess.Popen(cmdline, stdout=output_checker.fd,
                                      stderr=output_checker.fd)
     try:
@@ -306,7 +306,7 @@ def test_passthrough_hp(short_tmpdir, cache, output_checker):
     else:
         umount(mount_process, mnt_dir)
 
-        
+
 @pytest.mark.skipif(fuse_proto < (7,11),
                     reason='not supported by running kernel')
 def test_ioctl(tmpdir, output_checker):
@@ -318,7 +318,7 @@ def test_ioctl(tmpdir, output_checker):
     file_output = subprocess.check_output(['file', progname]).decode()
     if 'ELF 32-bit' in file_output and platform.machine() == 'x86_64':
         pytest.skip('ioctl test not supported for 32-bit binary on 64-bit system')
-    
+
     mnt_dir = str(tmpdir)
     testfile = pjoin(mnt_dir, 'fioc')
     cmdline = base_cmdline + [progname, '-f', mnt_dir ]
@@ -337,6 +337,79 @@ def test_ioctl(tmpdir, output_checker):
         subprocess.check_call(cmdline + [ '3' ])
         with open(testfile, 'rb') as fh:
             assert fh.read()== b'foo'
+    except:
+        cleanup(mount_process, mnt_dir)
+        raise
+    else:
+        umount(mount_process, mnt_dir)
+
+@pytest.mark.skipif(fuse_proto < (7,11),
+                    reason='not supported by running kernel')
+def test_ioctl_ll(tmpdir, output_checker):
+    progname = pjoin(basename, 'example', 'ioctl_ll')
+    if not os.path.exists(progname):
+        pytest.skip('%s not built' % os.path.basename(progname))
+
+    # Check if binary is 32-bit
+    file_output = subprocess.check_output(['file', progname]).decode()
+    if 'ELF 32-bit' in file_output and platform.machine() == 'x86_64':
+        pytest.skip('ioctl_ll test not supported for 32-bit binary on 64-bit system')
+
+    mnt_dir = str(tmpdir)
+    testfile = pjoin(mnt_dir, 'fioc')
+    cmdline = base_cmdline + [progname, '-f', mnt_dir]
+    mount_process = subprocess.Popen(cmdline, stdout=output_checker.fd,
+                                     stderr=output_checker.fd)
+    try:
+        wait_for_mount(mount_process, mnt_dir)
+
+        client = pjoin(basename, 'example', 'ioctl_ll_client')
+
+        # Test restricted ioctls: get_size (should be 0 initially)
+        cmdline = base_cmdline + [client, 'get_size', testfile]
+        assert subprocess.check_output(cmdline) == b'0\n'
+
+        # Write some data via regular file I/O
+        with open(testfile, 'wb') as fh:
+            fh.write(b'foobar')
+
+        # Test restricted ioctls: get_size (should be 6 now)
+        cmdline = base_cmdline + [client, 'get_size', testfile]
+        assert subprocess.check_output(cmdline) == b'6\n'
+
+        # Test restricted ioctls: set_size
+        cmdline = base_cmdline + [client, 'set_size', testfile, '3']
+        subprocess.check_call(cmdline)
+
+        # Verify size changed
+        with open(testfile, 'rb') as fh:
+            assert fh.read() == b'foo'
+
+        # Test unrestricted ioctls (only work as root)
+        if os.getuid() == 0:
+            # Test with larger than 4K data to stress buffer handling
+            test_size = 8192
+            test_data = b'A' * test_size
+
+            # Write large data via regular I/O
+            with open(testfile, 'wb') as fh:
+                fh.write(test_data)
+
+            # Test unrestricted read ioctl with >4K
+            cmdline = base_cmdline + [client, 'read', testfile, '0', str(test_size)]
+            output = subprocess.check_output(cmdline)
+            assert ('Read %d bytes' % test_size).encode() in output
+
+            # Test unrestricted write ioctl with >4K
+            write_data = 'B' * test_size
+            cmdline = base_cmdline + [client, 'write', testfile, '0', write_data]
+            output = subprocess.check_output(cmdline)
+            assert ('Wrote %d bytes' % test_size).encode() in output
+
+            # Verify content
+            with open(testfile, 'rb') as fh:
+                content = fh.read()
+                assert content == b'B' * test_size
     except:
         cleanup(mount_process, mnt_dir)
         raise
@@ -364,7 +437,7 @@ def test_null(tmpdir, output_checker):
     progname = pjoin(basename, 'example', 'null')
     if not os.path.exists(progname):
         pytest.skip('%s not built' % os.path.basename(progname))
-    
+
     mnt_file = str(tmpdir) + '/file'
     with open(mnt_file, 'w') as fh:
         fh.write('dummy')
@@ -558,7 +631,7 @@ def test_release_unlink_race(tmpdir, output_checker):
         safe_sleep(3)
 
         assert os.listdir(temp_dir_path) == []
-    
+
     except:
         temp_dir.cleanup()
         cleanup(fuse_process, fuse_mountpoint)
@@ -706,10 +779,10 @@ def tst_seek(src_dir, mnt_dir):
     with os_open(fullname, os.O_WRONLY) as fd:
         os.lseek(fd, 4, os.SEEK_SET)
         os.write(fd, b'com')
-        
+
     with open(fullname, 'rb') as fh:
         assert fh.read() == b'\0foocom\n'
-        
+
 def tst_open_unlink(mnt_dir):
     name = pjoin(mnt_dir, name_generator())
     data1 = b'foo'
