@@ -1,6 +1,12 @@
 Unreleased Changes
 ==================
 
+* ``fuse_session_custom_io()`` is disabled unless libfuse is built with
+  ``-Denable-custom-io=true``, and returns ``-ENOTSUP`` otherwise. The
+  ``hello_ll_uds`` example is built only with that option. A custom io peer
+  replaces the kernel as the sender of requests, and libfuse parses those
+  requests trusting that a kernel has already validated them.
+
 * ``fusermount3`` no longer accepts several time stamp related mount options
   (`atime, diratime, relatime, strictatime, lazytime and
   nolazytime`). These were added in 3.14.1 by commits

@@ -253,6 +253,10 @@ if get_option('enable-io-uring') and liburing.found()
    endif
 endif
 
+# A custom io peer is not the kernel, so nothing has validated the requests
+# libfuse parses. Off unless a build asks for it.
+private_cfg.set('HAVE_CUSTOM_IO', get_option('enable-custom-io'))
+
 # Check for systemd support
 #
 # Only the SD_LISTEN_FDS_START macro is used, so the header alone decides
@@ -458,6 +462,7 @@ summary({
 
 summary({
   'io_uring support': private_cfg.get('HAVE_URING', false),
+  'custom io support': private_cfg.get('HAVE_CUSTOM_IO', false),
   'USDT tracing': private_cfg.get('USDT_ENABLED', false),
   'systemd service support': private_cfg.get('HAVE_SYSTEMD', false),
   'systemd headers': private_cfg.get('HAVE_SYSTEMD_HEADERS', false),
