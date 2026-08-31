@@ -5,7 +5,9 @@ Unreleased Changes
   ``-Denable-custom-io=true``, and returns ``-ENOTSUP`` otherwise. The
   ``hello_ll_uds`` example is built only with that option. A custom io peer
   replaces the kernel as the sender of requests, and libfuse parses those
-  requests trusting that a kernel has already validated them.
+  requests trusting that a kernel has already validated them. See
+  ``doc/README.custom-io`` for what a peer has to check. Reported by David
+  Korczynski (Ada Logics), from a finding by Anthropic using Claude.
 
 * ``fusermount3`` no longer accepts several time stamp related mount options
   (`atime, diratime, relatime, strictatime, lazytime and
