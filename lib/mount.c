@@ -18,6 +18,8 @@
 #include "mount_util.h"
 #include "mount_i_linux.h"
 
+#include <ctype.h>
+#include <endian.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -125,6 +127,201 @@ static int fusermount_posix_spawn(posix_spawn_file_actions_t *action,
 		waitpid(pid, NULL, 0); /* FIXME: check exit code and return error if any */
 
 	return 0;
+}
+
+/*
+ * Run fusermount3 with one option and capture stdout.
+ * The caller owns the allocated @p outputp buffer.
+ * @return Child exit status, or -1 before a normal child exit.
+ */
+static int fusermount_capture_output(const char *option, char **outputp)
+{
+	char const *const argv[] = {FUSERMOUNT_PROG, option, NULL};
+	char read_buf[BUFSIZ];
+	char *output = NULL;
+	size_t output_size = 0;
+	posix_spawn_file_actions_t action;
+	pid_t pid;
+	int pipe_fds[2];
+	int child_status;
+	int status;
+	ssize_t read_size;
+
+	*outputp = NULL;
+	if (pipe(pipe_fds) == -1)
+		return -1;
+
+	status = posix_spawn_file_actions_init(&action);
+	if (status != 0)
+		goto close_pipe;
+
+	status = posix_spawn_file_actions_addclose(&action, pipe_fds[0]);
+	if (status == 0)
+		status = posix_spawn_file_actions_adddup2(&action, pipe_fds[1],
+							   STDOUT_FILENO);
+	if (status == 0)
+		status = posix_spawn_file_actions_addclose(&action, pipe_fds[1]);
+	if (status != 0)
+		goto destroy_action;
+
+	status = fusermount_posix_spawn(&action, argv, &pid);
+	posix_spawn_file_actions_destroy(&action);
+	close(pipe_fds[1]);
+	if (status != 0) {
+		close(pipe_fds[0]);
+		return -1;
+	}
+
+	while ((read_size = read(pipe_fds[0], read_buf, sizeof(read_buf))) != 0) {
+		char *new_output;
+
+		if (read_size == -1) {
+			if (errno == EINTR)
+				continue;
+			status = -1;
+			break;
+		}
+
+		new_output = realloc(output, output_size + read_size + 1);
+		if (new_output == NULL) {
+			status = -1;
+			break;
+		}
+		output = new_output;
+		memcpy(output + output_size, read_buf, read_size);
+		output_size += read_size;
+		output[output_size] = '\0';
+	}
+	close(pipe_fds[0]);
+
+	while (waitpid(pid, &child_status, 0) == -1) {
+		if (errno == EINTR)
+			continue;
+		status = -1;
+		break;
+	}
+
+	if (status != 0 || !WIFEXITED(child_status)) {
+		free(output);
+		return -1;
+	}
+
+	if (output == NULL) {
+		output = strdup("");
+		if (output == NULL)
+			return -1;
+	}
+
+	*outputp = output;
+	return WEXITSTATUS(child_status);
+
+destroy_action:
+	posix_spawn_file_actions_destroy(&action);
+close_pipe:
+	close(pipe_fds[0]);
+	close(pipe_fds[1]);
+	return -1;
+}
+
+/*
+ * Check whether @p output contains @p word as a complete word.
+ * Whitespace boundaries prevent matching option prefixes.
+ * @return true if @p word occurs as a complete word.
+ */
+static bool fusermount_output_has_word(const char *output, const char *word)
+{
+	size_t word_len = strlen(word);
+	const char *match = output;
+
+	while ((match = strstr(match, word)) != NULL) {
+		if ((match == output || isspace((unsigned char) match[-1])) &&
+		    (match[word_len] == '\0' ||
+		     isspace((unsigned char) match[word_len])))
+			return true;
+		match += word_len;
+	}
+
+	return false;
+}
+
+/*
+ * Convert one hexadecimal digit to its numeric value.
+ * @return Nibble value, or -1 for a non-hexadecimal byte.
+ */
+static int fusermount_hex_digit_value(char digit)
+{
+	if (digit >= '0' && digit <= '9')
+		return digit - '0';
+	if (digit >= 'a' && digit <= 'f')
+		return digit - 'a' + 10;
+	if (digit >= 'A' && digit <= 'F')
+		return digit - 'A' + 10;
+
+	return -1;
+}
+
+/*
+ * Decode @p output from network-order hexadecimal into host-order bits.
+ * @return 0 on success, -1 for malformed output.
+ */
+static int fusermount_parse_features(const char *output, uint64_t *featuresp)
+{
+	uint8_t encoded_features[sizeof(*featuresp)];
+	uint64_t network_features;
+	size_t output_len = strlen(output);
+
+	if (output_len == sizeof(encoded_features) * 2 + 1 &&
+	    output[output_len - 1] == '\n')
+		output_len--;
+	if (output_len != sizeof(encoded_features) * 2)
+		return -1;
+
+	for (size_t byte_idx = 0; byte_idx < sizeof(encoded_features); byte_idx++) {
+		int high_nibble = fusermount_hex_digit_value(output[byte_idx * 2]);
+		int low_nibble = fusermount_hex_digit_value(output[byte_idx * 2 + 1]);
+
+		if (high_nibble < 0 || low_nibble < 0)
+			return -1;
+		encoded_features[byte_idx] =
+			(uint8_t) ((high_nibble << 4) | low_nibble);
+	}
+
+	memcpy(&network_features, encoded_features, sizeof(network_features));
+	*featuresp = be64toh(network_features);
+	return 0;
+}
+
+/*
+ * Obtain supported feature bits from fusermount3.
+ */
+uint64_t fuse_mount_fusermount_features(void)
+{
+	uint64_t features;
+	char *output;
+	int status;
+
+	/* Older versions reject --features, so probe --help first. */
+	status = fusermount_capture_output("--help", &output);
+	if (status < 0)
+		return 0;
+	if (!fusermount_output_has_word(output, "--features")) {
+		free(output);
+		return 0;
+	}
+	free(output);
+
+	status = fusermount_capture_output("--features", &output);
+	if (status != 0) {
+		free(output);
+		return 0;
+	}
+
+	status = fusermount_parse_features(output, &features);
+	free(output);
+	if (status != 0)
+		return 0;
+
+	return features;
 }
 
 void fuse_mount_version(void)
