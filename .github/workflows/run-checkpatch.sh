@@ -27,5 +27,5 @@ IGNORES="${IGNORES},BAD_REPORTED_BY_LINK"
 # hand checkpatch its predecessor and report on the wrong patch. The range
 # emits nothing instead, which is the right answer for such a commit.
 git -c diff.algorithm=default format-patch --stdout "${commit}^..${commit}" \
-    -- . ':!*.yml' ':!*.yaml' |
+    -- . ':!*.yml' ':!*.yaml' ':!checkpatch.pl' |
     ./checkpatch.pl --show-types --max-line-length=100 --no-tree --ignore ${IGNORES} -
