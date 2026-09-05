@@ -24,6 +24,9 @@ OUTPUT_DIR = '/var/tmp/fuse-release'
 
 REPO_URL = 'https://github.com/libfuse/libfuse'
 
+# A passing run of this workflow says the tarball builds and tests clean.
+RELEASE_WORKFLOW = 'release.yml'
+
 PAGES_URL = 'git@github.com:libfuse/libfuse.github.io.git'
 
 ANNOUNCE_TEMPLATE = """\
@@ -210,7 +213,7 @@ VERSION_LINE = re.compile(r"^(\s*version:\s*')([^']+)(')")
 
 
 def version_in(text):
-    """Return the version a meson.build declares, e.g. 3.19.0-rc0."""
+    """Return the version a meson.build declares, e.g. X.Y.Z-rc0."""
     for line in text.splitlines():
         match = VERSION_LINE.match(line)
         if match is not None:
@@ -340,15 +343,15 @@ def extend_authors(prev_tag, added):
 
 
 def signify_key_name(tag):
-    """Return the signing key basename of a tag: fuse-3.19 for fuse-3.19.0."""
+    """Return the signing key basename of a tag: fuse-X.Y for fuse-X.Y.Z."""
     return tag.rsplit('.', 1)[0]
 
 
 def missing_signing_keys(version):
     """Return the next release's key basenames whose public half is absent.
 
-    Both successors are returned.  3.19.0 is followed by 3.20.0 or by 4.0.0,
-    and the tarball has to carry the key of whichever it turns out to be.
+    Both successors are returned.  X.Y.0 is followed by X.<Y+1>.0 or by
+    <X+1>.0.0, and the tarball has to carry the key of whichever it becomes.
     """
     major, minor = version.split('.')[:2]
     names = ['fuse-%s.%d' % (major, int(minor) + 1),
@@ -608,6 +611,19 @@ def compare_url(base, branch):
     return '%s/compare/%s...%s?expand=1' % (REPO_URL, base, branch)
 
 
+def require_workflow_passed(dry_run, branch, commit):
+    """Ask for the release workflow, and end the release unless it passed."""
+    print('')
+    print('Run %s on %s and wait for it to pass:' % (RELEASE_WORKFLOW, branch))
+    print('    %s/actions/workflows/%s' % (REPO_URL, RELEASE_WORKFLOW))
+    print('    Run workflow -> Branch: %s' % branch)
+    if dry_run:
+        return
+    print('')
+    if not confirm('Did that run of %s pass?' % commit[:12]):
+        stop('the release workflow has not passed')
+
+
 def cmd_prepare(args):
     """Make the "Released ..." commit the release pull request carries."""
     require_clean_worktree()
@@ -769,6 +785,12 @@ def cmd_publish(args):
                                             args.work_dir)):
             test_tarball(tarball, verify_dir, args.work_dir)
 
+    # This comes after the local test.  A tarball that fails there never
+    # reaches GitHub.  A public tag was let out by a run that passed.
+    tag_is_public = remote_has_tag(args.remote, tag)
+    if not tag_is_public and not args.skip_workflow:
+        require_workflow_passed(dry_run, branch, commit)
+
     tag_argv = ['git', 'tag', '-s', '-m', tag, tag, commit]
     if tag_exists(tag):
         if git('rev-parse', tag + '^{commit}') != commit:
@@ -800,7 +822,7 @@ def cmd_publish(args):
     # left does not depend on it, and the instructions below are needed
     # either way.
     push_argv = ['git', 'push', args.remote, 'refs/tags/' + tag]
-    if remote_has_tag(args.remote, tag):
+    if tag_is_public:
         print('%s carries %s already' % (args.remote, tag))
     elif step(dry_run, 'Push the tag:', shown(push_argv)):
         run(push_argv)
@@ -827,17 +849,17 @@ def cmd_publish(args):
 
 
 STEPS = """\
-Step 1  release.py prepare 3.19.0  commit the version, ChangeLog, AUTHORS
-                                   and the keys of the next release
-Step 2                             get that pull request merged
-Step 3  release.py publish         pack, test, tag, sign and push it
-Step 4                             create the GitHub release
-Step 5                             send the announcement mail
+Step 1  release.py prepare X.Y.Z  commit the version, ChangeLog, AUTHORS
+                                  and the keys of the next release
+Step 2                            get that pull request merged
+Step 3  release.py publish        pack, test, tag, sign and push it
+Step 4                            create the GitHub release
+Step 5                            send the announcement mail
 
 Steps 2, 4 and 5 are done by hand; publish prints what they need.  tarball
-and test pack and check one commit on their own; publish runs both.  Every
-command that changes something takes --dry-run.  Details:
-dev-docs/release-process.md
+and test pack and check one commit on their own; publish and the release
+workflow run both.  Every command that changes something takes --dry-run.
+Details: dev-docs/release-process.md
 """
 
 PREPARE_HELP = """\
@@ -863,11 +885,12 @@ checkout it was packed from.  A file git archive leaves out fails here.
 """
 
 PUBLISH_HELP = """\
-Pack the tarball and test it, create the signed tag, sign the tarball,
-write the release notes and the announcement mail, push the tag and the
-API documentation, and print what GitHub and the mail still need by hand.
-Every action is shown with the command it runs and confirmed on its own;
-a no before the tag ends the release with nothing to take back.
+Pack the tarball, test it, ask for a passing run of the release workflow,
+create the signed tag, sign the tarball, write the release notes and the
+announcement mail, push the tag and the API documentation, and print what
+GitHub and the mail still need by hand.  Every action is shown with the
+command it runs and confirmed on its own; a no before the tag ends the
+release with nothing to take back.
 
 The version and the ChangeLog are read out of the branch that is
 released, --branch or the checked-out one.  That branch has to point at
@@ -893,7 +916,7 @@ def main():
         'prepare', parents=[common], description=PREPARE_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         help='make the "Released ..." commit')
-    prepare.add_argument('version', help='release version, e.g. 3.19.0')
+    prepare.add_argument('version', help='release version, X.Y.Z')
     prepare.add_argument('--remote', default='origin',
                          help='remote to push the branch to (default: origin)')
     prepare.add_argument('--base', default='master',
@@ -908,7 +931,7 @@ def main():
         'tarball', parents=[common], description=TARBALL_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         help='build the release tarball')
-    tarball.add_argument('commit', help='what to pack, e.g. fuse-3.19.0 or HEAD')
+    tarball.add_argument('commit', help='what to pack, e.g. fuse-X.Y.Z or HEAD')
     tarball.add_argument('--output-dir', default=OUTPUT_DIR,
                          help='where to extract and pack (default: %(default)s)')
     tarball.set_defaults(func=cmd_tarball)
@@ -917,7 +940,7 @@ def main():
         'test', parents=[common], description=TEST_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         help='build and test what a tarball ships')
-    test.add_argument('tarball', help='what to test, e.g. fuse-3.19.0.tar.gz')
+    test.add_argument('tarball', help='what to test, e.g. fuse-X.Y.Z.tar.gz')
     test.add_argument('--work-dir',
                       help='where test/ci-build.sh builds and logs, verbatim')
     test.set_defaults(func=cmd_test)
@@ -940,6 +963,8 @@ def main():
                          help='where test/ci-build.sh builds and logs, verbatim')
     publish.add_argument('--skip-test', action='store_true',
                          help='do not build and test the tarball')
+    publish.add_argument('--skip-workflow', action='store_true',
+                         help='do not ask about the release workflow run')
     publish.add_argument('--skip-docs', action='store_true',
                          help='do not update the API documentation')
     publish.add_argument('--force', action='store_true',
