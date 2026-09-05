@@ -3,18 +3,18 @@ Release Process
 
 `scripts/release.py` does the work. Run it from a libfuse checkout. Every
 command takes `--dry-run`: it prints the exact commands and changes nothing.
-3.19.0 stands for the release being cut in every example below.
+X.Y.Z is the release being cut.
 
 Step 1 -- prepare the release commit
 ------------------------------------
 
-* `scripts/release.py prepare 3.19.0`
+* `scripts/release.py prepare X.Y.Z`
 * Sets the version in `meson.build`.
 * Renames the `Unreleased Changes` section of `ChangeLog.rst` to this release.
 * Appends every author who is not in `AUTHORS` yet.
 * Generates a signing key only when the next release has none, which is a new
   minor or major version. A patch release inherits the keys of its `.0`.
-* Leaves one commit, `Released fuse-3.19.0`.
+* Leaves one commit, `Released fuse-X.Y.Z`.
 * Offers to push the branch, and prints the URL that opens a pull request for
   it. `--remote` names the remote it is pushed to, `origin` by default.
   `--base` names the branch that pull request merges into, `master` by
@@ -38,10 +38,11 @@ Step 3 -- publish
   * update -- `git pull --ff-only`, when the branch is behind the remote
   * pack -- `git archive`, `doxygen`, `tar -czf`
   * test -- `tar -xzf` into `verify/`, `test/ci-build.sh --name release`
+  * the `Release tarball` workflow -- run it, answer whether it passed
   * tag -- `git tag -s`
   * sign -- `signify-openbsd -S`, then `-V`
-  * write -- `fuse-3.19.0-notes.md`, `fuse-3.19.0-announce.txt`
-  * push -- `git push origin refs/tags/fuse-3.19.0`
+  * write -- `fuse-X.Y.Z-notes.md`, `fuse-X.Y.Z-announce.txt`
+  * push -- `git push origin refs/tags/fuse-X.Y.Z`
   * publish `doxygen/` in `../libfuse.github.io`
 
 * A no before the tag ends the release with nothing to take back.
@@ -71,6 +72,7 @@ Step 3 -- publish
     directory does not exist, and stops when the checkout it finds has
     uncommitted changes.
   * `--skip-test` -- do not build and test the tarball.
+  * `--skip-workflow` -- do not ask about the release workflow run.
   * `--skip-docs` -- do not update the API documentation.
   * `--work-dir` -- passed to `test/ci-build.sh` as its build and log
     directory.
@@ -85,7 +87,7 @@ Step 4 -- create the GitHub release
 Step 5 -- send the announcement
 -------------------------------
 
-* Send `fuse-3.19.0-announce.txt` to fuse-devel@lists.linux.dev.
+* Send `fuse-X.Y.Z-announce.txt` to fuse-devel@lists.linux.dev.
 
 The tarball
 -----------
@@ -95,7 +97,7 @@ The tarball
 * Extracted tree: every `.gitignore` deleted, `.github` and `.cirrus.yml`
   removed, `doxygen doc/Doxyfile` writes `doc/html`.
 * Named after the version the packed `meson.build` declares, so
-  `release.py tarball HEAD` and `release.py tarball fuse-3.19.0` agree.
+  `release.py tarball HEAD` and `release.py tarball fuse-X.Y.Z` agree.
 * The extracted tree stays next to the tarball, `doxygen/` is copied from its
   `doc/html`.
 * All of it lands in `/var/tmp/fuse-release`, `--output-dir` elsewhere: the
@@ -105,7 +107,7 @@ The tarball
 The test build
 --------------
 
-* `release.py test fuse-3.19.0.tar.gz` unpacks it into `verify/` next to
+* `release.py test fuse-X.Y.Z.tar.gz` unpacks it into `verify/` next to
   itself and runs `test/ci-build.sh --name release` in there.
 * Unpacked rather than built where it was packed: the build has to see what a
   downloader gets, so a file `git archive` leaves out fails the release
@@ -116,6 +118,25 @@ The test build
 * `test/ci/prepare-runner.sh` is not part of this. It rewrites
   `kernel.core_pattern`, which a CI runner needs and a workstation must not
   get.
+
+The same test on GitHub
+-----------------------
+
+* `publish` prints the Actions URL for the branch it releases after the
+  local test, and waits for the answer whether that run passed.
+* Start it there with `Run workflow` on that branch. It is a
+  `workflow_dispatch`, so nothing else ever starts it.
+* `.github/workflows/release.yml` calls `scripts/release-tarball.sh` and
+  nothing else.  The whole job is that one command, and it runs by hand.
+* A `workflow_dispatch` is only listed when the file is on the default
+  branch, and the run uses the file from the selected branch.  A release
+  branch has to carry `release.yml`, `release.py` and
+  `release-tarball.sh`.
+* Answering anything but yes ends `publish` before the tag exists, so nothing
+  has to be deleted. Fix, push, run `publish` again.
+* Once the tag is on the remote it was let out by a run that passed, so a
+  repeated `publish` does not ask again.
+* The workflow packs its own tarball, so it needs no key; signing stays here.
 
 Signing keys
 ------------
