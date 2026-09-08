@@ -102,10 +102,18 @@ def succeeds(argv, cwd=None):
     return done.returncode == 0
 
 
-def require_tool(name):
-    """Fail unless an external program is installed."""
-    if shutil.which(name) is None:
-        fail(name + ' is not installed')
+def require_tools(names):
+    """Fail unless every external program a command runs is installed.
+
+    All of them are named at once.  A release that stops on the second one
+    after the first was installed costs another round.
+    """
+    missing = []
+    for name in names:
+        if shutil.which(name) is None:
+            missing.append(name)
+    if len(missing) > 0:
+        fail('not installed: ' + ', '.join(missing))
 
 
 def remove_path(path):
@@ -458,7 +466,6 @@ def tarball_plan(tarball_name, output_dir, commit):
 
 def build_tarball(commit, output_dir):
     """Extract a commit, build the API documentation into it, and pack it up."""
-    require_tool('doxygen')
     # The name comes from the packed tree.  A tarball cannot claim a version
     # its own meson.build does not.
     tarball_name = 'fuse-' + version_at(commit)
@@ -739,7 +746,7 @@ def prepare_commit(args, root, branch):
     unreleased_index, unreleased_heading = find_unreleased_heading(root)
     key_name = missing_signing_key(root, version, args.force_new_version)
     if key_name != '':
-        require_tool('signify-openbsd')
+        require_tools(['signify-openbsd'])
     added = new_authors(root, branch, prev_tag)
     today = date.today().isoformat()
     commit_argv = ['git', '-C', str(root), 'commit', '-s', '--all',
@@ -796,12 +803,12 @@ def prepare_commit(args, root, branch):
 
 def cmd_tarball(args):
     """Build the release tarball of a commit and print its path."""
+    require_tools(['doxygen'])
     if not succeeds(['git', 'rev-parse', '-q', '--verify',
                      args.commit + '^{commit}']):
         fail('no such commit: ' + args.commit)
     output_dir = Path(args.output_dir).resolve()
     if args.dry_run:
-        require_tool('doxygen')
         tarball_name = 'fuse-' + version_at(args.commit)
         for line in tarball_plan(tarball_name, output_dir, args.commit):
             print('+ ' + line)
@@ -829,6 +836,9 @@ def cmd_test(args):
 def cmd_publish(args):
     """Tag, build and sign the release a branch carries."""
     dry_run = args.dry_run
+    # Before the first question, so an uninstalled program is not found
+    # halfway through a release.
+    require_tools(['doxygen', 'signify-openbsd'])
     branch, commit = release_branch(args.branch)
 
     # The merged release commit arrives on the remote first.  Everything below
@@ -866,7 +876,6 @@ def cmd_publish(args):
     prev_tag = previous_tag(version)
     changelog = file_at(commit, 'ChangeLog.rst')
     changelog_section(version, changelog)
-    require_tool('signify-openbsd')
     secret = signing_key(tag)
     require_pushed(args.remote, branch, commit)
     # A tag the remote carries is the release everyone else can see.  One at

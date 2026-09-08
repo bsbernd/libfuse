@@ -132,6 +132,18 @@ class FakeGit:
 class ScriptCase(unittest.TestCase):
     """Run one release.py command with what it reaches outside replaced."""
 
+    def setUp(self):
+        # What the command asked for, and what a case says is not installed.
+        self.wanted_tools = []
+        self.missing_tools = []
+
+    def have_tools(self, names):
+        """Answer the tool check the way a case says the machine looks."""
+        self.wanted_tools = names
+        for name in names:
+            if name in self.missing_tools:
+                release.fail('not installed: ' + name)
+
     def replace(self, name, value):
         """Put a stub in the module and restore the original afterwards."""
         self.addCleanup(setattr, release, name, getattr(release, name))
@@ -173,6 +185,7 @@ class PublishCase(ScriptCase):
     """A cmd_publish() run with everything outside the script replaced."""
 
     def setUp(self):
+        super().setUp()
         base = tempfile.TemporaryDirectory()
         self.addCleanup(base.cleanup)
         self.output_dir = Path(base.name) / 'release'
@@ -186,7 +199,7 @@ class PublishCase(ScriptCase):
         self.replace('run', self.git.run)
         self.replace('succeeds', self.git.succeeds)
         self.replace('confirm', self.answer)
-        self.replace('require_tool', lambda name: None)
+        self.replace('require_tools', self.have_tools)
         self.replace('signing_key', lambda tag: Path('/nonexistent/key.sec'))
         self.replace('build_tarball', self.pack)
         self.replace('test_tarball', self.record_test)
@@ -352,10 +365,42 @@ class Reading(unittest.TestCase):
         self.assertEqual(release.signify_key_name(TAG), 'fuse-3.18')
 
 
+class RequiredTools(ScriptCase):
+    """require_tools() names every program a command needs and lacks."""
+
+    def test_an_installed_program_passes(self):
+        release.require_tools(['sh'])
+
+    def test_every_missing_program_is_named_at_once(self):
+        printed = io.StringIO()
+        with redirect_stderr(printed):
+            with self.assertRaises(SystemExit) as left:
+                release.require_tools(['sh', 'not-a-program-x',
+                                       'not-a-program-y'])
+        self.assertEqual(left.exception.code, 1)
+        self.assertIn('not-a-program-x, not-a-program-y', printed.getvalue())
+
+
+class Tools(PublishCase):
+    """A publish checks its programs before it does anything."""
+
+    def test_the_tools_are_checked_before_the_first_question(self):
+        self.publish()
+        self.assertEqual(self.wanted_tools, ['doxygen', 'signify-openbsd'])
+
+    def test_a_missing_tool_ends_the_release_before_anything_runs(self):
+        self.missing_tools = ['doxygen']
+        self.publish_fails()
+        self.assertEqual(self.questions, [])
+        self.assertEqual(self.git.ran, [])
+        self.assertEqual(self.packed, [])
+
+
 class SigningKey(ScriptCase):
     """Which key a release has to generate before it is cut."""
 
     def setUp(self):
+        super().setUp()
         self.root = self.checkout()
 
     def carry(self, name):
@@ -390,6 +435,7 @@ class UnreleasedHeading(ScriptCase):
     """Which ChangeLog.rst heading names the section a release closes."""
 
     def setUp(self):
+        super().setUp()
         self.root = self.checkout()
 
     def find(self, changelog):
@@ -418,6 +464,7 @@ class PrepareCase(ScriptCase):
     """A cmd_prepare() run against a checkout of the files it edits."""
 
     def setUp(self):
+        super().setUp()
         self.root = self.checkout()
         self.fill(self.root)
         self.git = FakeGit()
@@ -432,7 +479,7 @@ class PrepareCase(ScriptCase):
         self.replace('run', self.git.run)
         self.replace('succeeds', self.git.succeeds)
         self.replace('confirm', self.answer)
-        self.replace('require_tool', lambda name: None)
+        self.replace('require_tools', self.have_tools)
         self.replace('create_signing_key', self.generate)
 
     def fill(self, root):
