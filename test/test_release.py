@@ -363,19 +363,21 @@ class SigningKey(ScriptCase):
         (self.root / 'signify' / (name + '.pub')).write_text('untrusted\n')
 
     def test_a_patch_release_generates_nothing(self):
-        self.assertEqual(release.missing_signing_key(VERSION, False), '')
+        self.assertEqual(release.missing_signing_key(self.root, VERSION, False),
+                         '')
 
     def test_a_minor_release_generates_the_next_minor(self):
-        self.assertEqual(release.missing_signing_key('3.19.0', False),
-                         'fuse-3.20')
+        self.assertEqual(release.missing_signing_key(self.root, '3.19.0',
+                                                     False), 'fuse-3.20')
 
     def test_a_key_the_checkout_carries_is_not_generated_again(self):
         self.carry('fuse-3.20')
-        self.assertEqual(release.missing_signing_key('3.19.0', False), '')
+        self.assertEqual(release.missing_signing_key(self.root, '3.19.0',
+                                                     False), '')
 
     def test_a_forced_patch_release_generates_the_next_minor(self):
-        self.assertEqual(release.missing_signing_key('3.19.1', True),
-                         'fuse-3.20')
+        self.assertEqual(release.missing_signing_key(self.root, '3.19.1',
+                                                     True), 'fuse-3.20')
 
 
 def unreleased_version_section(version):
@@ -392,7 +394,7 @@ class UnreleasedHeading(ScriptCase):
 
     def find(self, changelog):
         (self.root / 'ChangeLog.rst').write_text(changelog)
-        return release.find_unreleased_heading()
+        return release.find_unreleased_heading(self.root)
 
     def test_the_unreleased_changes_heading_is_found(self):
         index, heading = self.find(UNRELEASED + CHANGELOG)
@@ -417,14 +419,14 @@ class PrepareCase(ScriptCase):
 
     def setUp(self):
         self.root = self.checkout()
-        (self.root / 'meson.build').write_text(MESON % DEVELOPMENT_VERSION)
-        (self.root / 'ChangeLog.rst').write_text(UNRELEASED + CHANGELOG)
-        (self.root / 'AUTHORS').write_text(AUTHOR + '\n')
+        self.fill(self.root)
         self.git = FakeGit()
         self.questions = []
         # The question a case answers with a no.  Every other one gets a yes.
         self.refused = ''
         self.generated = []
+        self.added = ''
+        self.removed = None
 
         self.replace('output', self.git.output)
         self.replace('run', self.git.run)
@@ -433,19 +435,44 @@ class PrepareCase(ScriptCase):
         self.replace('require_tool', lambda name: None)
         self.replace('create_signing_key', self.generate)
 
+    def fill(self, root):
+        """Write the three files a release edits into a checkout."""
+        (root / 'signify').mkdir(exist_ok=True)
+        (root / 'meson.build').write_text(MESON % DEVELOPMENT_VERSION)
+        (root / 'ChangeLog.rst').write_text(UNRELEASED + CHANGELOG)
+        (root / 'AUTHORS').write_text(AUTHOR + '\n')
+
+    def use_worktree(self):
+        """Stand a second checkout in for the one --branch checks out."""
+        base = tempfile.TemporaryDirectory()
+        self.addCleanup(base.cleanup)
+        self.worktree = Path(base.name) / 'checkout'
+        self.worktree.mkdir()
+        self.fill(self.worktree)
+        self.replace('add_worktree', self.add)
+        self.replace('remove_worktree', self.remove)
+        return self.worktree
+
+    def add(self, branch):
+        self.added = branch
+        return self.worktree
+
+    def remove(self, root):
+        self.removed = root
+
     def answer(self, question):
         self.questions.append(question)
         if self.refused != '' and self.refused in question:
             return False
         return True
 
-    def generate(self, name):
+    def generate(self, root, name):
         self.generated.append(name)
 
     def args(self, **changes):
         return self.options(
-            Namespace(dry_run=False, version=VERSION, remote=REMOTE,
-                      base='master', force_new_version=False),
+            Namespace(dry_run=False, version=VERSION, branch=None,
+                      remote=REMOTE, base='master', force_new_version=False),
             changes)
 
     def prepare(self, **changes):
@@ -477,7 +504,7 @@ class NextVersionKey(PrepareCase):
         self.refused = release.next_version_question('fuse-3.20')
         self.prepare_stops(version='3.19.0')
         self.assertEqual(self.generated, [])
-        self.assertEqual(release.read_version(), DEVELOPMENT_VERSION)
+        self.assertEqual(release.read_version(self.root), DEVELOPMENT_VERSION)
         self.assertEqual(self.git.ran, [])
 
     def test_force_new_version_generates_the_key_of_a_patch_release(self):
@@ -491,7 +518,7 @@ class NextVersionKey(PrepareCase):
         self.assertIn(release.next_version_question('fuse-3.20'), printed)
         self.assertEqual(self.questions, [])
         self.assertEqual(self.generated, [])
-        self.assertEqual(release.read_version(), DEVELOPMENT_VERSION)
+        self.assertEqual(release.read_version(self.root), DEVELOPMENT_VERSION)
 
 
 class Changelog(PrepareCase):
@@ -514,6 +541,47 @@ class Changelog(PrepareCase):
         self.prepare()
         closed = (self.root / 'ChangeLog.rst').read_text()
         self.assertEqual(release.changelog_section(VERSION, closed), CHANGE)
+
+
+class PrepareBranch(PrepareCase):
+    """--branch releases a branch the script does not have checked out."""
+
+    def test_the_release_is_written_and_committed_in_the_added_checkout(self):
+        worktree = self.use_worktree()
+        self.prepare(branch=BRANCH)
+        self.assertEqual(self.added, BRANCH)
+        self.assertIn(['git', '-C', str(worktree), 'commit', '-s', '--all',
+                       '-m', 'Released ' + TAG], self.git.ran)
+        self.assertEqual(release.read_version(worktree), VERSION)
+
+    def test_the_checkout_the_script_runs_in_is_left_alone(self):
+        self.use_worktree()
+        self.prepare(branch=BRANCH)
+        self.assertEqual(release.read_version(self.root), DEVELOPMENT_VERSION)
+
+    def test_the_added_checkout_is_taken_out_again(self):
+        worktree = self.use_worktree()
+        self.prepare(branch=BRANCH)
+        self.assertEqual(self.removed, worktree)
+
+    def test_the_added_checkout_is_taken_out_when_the_release_stops(self):
+        worktree = self.use_worktree()
+        self.refused = release.next_version_question('fuse-3.20')
+        self.prepare_stops(branch=BRANCH, version='3.19.0')
+        self.assertEqual(self.removed, worktree)
+
+    def test_a_branch_behind_the_remote_is_brought_up_first(self):
+        self.use_worktree()
+        self.git.remote_commit = OTHER_COMMIT
+        self.prepare(branch=BRANCH)
+        self.assertIn(['git', 'fetch', REMOTE, '%s:%s' % (BRANCH, BRANCH)],
+                      self.git.ran)
+
+    def test_the_release_is_published_from_the_branch_not_a_pull_request(self):
+        self.use_worktree()
+        printed = self.prepare(branch=BRANCH)
+        self.assertNotIn('/compare/', printed)
+        self.assertIn('publish --branch ' + BRANCH, printed)
 
 
 if __name__ == '__main__':

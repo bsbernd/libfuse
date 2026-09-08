@@ -21,12 +21,21 @@ Step 1 -- prepare the release commit
   it. `--remote` names the remote it is pushed to, `origin` by default.
   `--base` names the branch that pull request merges into, `master` by
   default. `--force-new-version` is under Signing keys below.
+* `--branch` commits the release to another branch than the checked-out one.
+  That branch is brought up to what `--remote` has it at, checked out on its
+  own, and the temporary checkout is taken back out afterwards. A dry run adds
+  and removes it too, and writes nothing.
+* A maintenance release is cut that way. `fuse-X.Y.x` carries neither
+  `release.py` nor `release.yml`, so checking it out would take the script
+  away, and there is no pull request either: the release commit lands on the
+  branch and only the push is left.
 
 Step 2 -- get the pull request merged
 -------------------------------------
 
 * Open the pull request at the printed URL, and get it merged. Neither is
-  scriptable without `gh`.
+  scriptable without `gh`. A `--branch` release has none of this: its commit
+  is on the branch already, and `prepare` offered the push.
 * `git checkout master`. `publish` reads the signing keys from the checkout,
   so it releases another branch only from master.
 * Pulling master is not needed. `publish` offers the fast-forward itself.

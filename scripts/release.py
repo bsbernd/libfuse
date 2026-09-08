@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -156,10 +157,10 @@ def worktree_is_clean(cwd=None):
     return git('status', '--porcelain', '--untracked-files=no', cwd=cwd) == ''
 
 
-def require_clean_worktree():
-    """Fail unless the libfuse checkout has no modified tracked file."""
-    if not worktree_is_clean():
-        fail('the working tree has uncommitted changes')
+def require_clean_worktree(root):
+    """Fail unless a libfuse checkout has no modified tracked file."""
+    if not worktree_is_clean(cwd=root):
+        fail('%s has uncommitted changes' % root)
 
 
 def tag_exists(tag):
@@ -238,9 +239,9 @@ def version_in(text):
     fail('meson.build has no version line')
 
 
-def read_version():
-    """Return the version the checkout declares."""
-    return version_in((REPO_ROOT / 'meson.build').read_text())
+def read_version(root):
+    """Return the version a checkout declares."""
+    return version_in((root / 'meson.build').read_text())
 
 
 def file_at(commit, path):
@@ -253,9 +254,9 @@ def version_at(commit):
     return version_in(file_at(commit, 'meson.build'))
 
 
-def write_version(version):
-    """Replace the version meson.build declares."""
-    path = REPO_ROOT / 'meson.build'
+def write_version(root, version):
+    """Replace the version a checkout's meson.build declares."""
+    path = root / 'meson.build'
     lines = path.read_text().splitlines(keepends=True)
     for index in range(len(lines)):
         match = VERSION_LINE.match(lines[index])
@@ -287,9 +288,9 @@ def is_unreleased_heading(line):
     return UNRELEASED_VERSION_HEADING.match(line) is not None
 
 
-def find_unreleased_heading():
+def find_unreleased_heading(root):
     """Return the ChangeLog.rst line index and text of the open section."""
-    lines = (REPO_ROOT / 'ChangeLog.rst').read_text().splitlines()
+    lines = (root / 'ChangeLog.rst').read_text().splitlines()
     for index in range(len(lines) - 1):
         if is_unreleased_heading(lines[index]) and is_rst_underline(lines[index + 1]):
             return index, lines[index]
@@ -302,9 +303,9 @@ def changelog_heading(version, today):
     return 'libfuse %s (%s)' % (version, today)
 
 
-def close_changelog(index, version, today):
+def close_changelog(root, index, version, today):
     """Rename the heading of the open section to the one of this release."""
-    path = REPO_ROOT / 'ChangeLog.rst'
+    path = root / 'ChangeLog.rst'
     lines = path.read_text().splitlines()
     heading = changelog_heading(version, today)
     lines[index] = heading
@@ -334,19 +335,19 @@ def changelog_section(version, changelog):
 MAIL_IN_ANGLES = re.compile(r'<([^>]+)>')
 
 
-def known_author_mails():
+def known_author_mails(root):
     """Return the lower-cased mail addresses AUTHORS already lists."""
     known = set()
-    for match in MAIL_IN_ANGLES.finditer((REPO_ROOT / 'AUTHORS').read_text()):
+    for match in MAIL_IN_ANGLES.finditer((root / 'AUTHORS').read_text()):
         known.add(match.group(1).lower())
     return known
 
 
-def new_authors(prev_tag):
+def new_authors(root, branch, prev_tag):
     """Return every author since a tag that AUTHORS does not list yet."""
-    known = known_author_mails()
+    known = known_author_mails(root)
     added = []
-    listing = git('log', '--format=%aN <%aE>', prev_tag + '..HEAD')
+    listing = git('log', '--format=%aN <%aE>', prev_tag + '..' + branch)
     for line in listing.splitlines():
         match = MAIL_IN_ANGLES.search(line)
         if match is None:
@@ -359,9 +360,9 @@ def new_authors(prev_tag):
     return added
 
 
-def extend_authors(prev_tag, added):
+def extend_authors(root, prev_tag, added):
     """Append authors to AUTHORS, under a heading naming the previous tag."""
-    path = REPO_ROOT / 'AUTHORS'
+    path = root / 'AUTHORS'
     text = path.read_text()
     if not text.endswith('\n'):
         text += '\n'
@@ -381,8 +382,8 @@ def next_version_question(key_name):
     return 'Is %s going to be the next version?' % key_name
 
 
-def missing_signing_key(version, force_new_version):
-    """Return the next minor's key basename, empty when the checkout has it.
+def missing_signing_key(root, version, force_new_version):
+    """Return the next minor's key basename, empty when the release has it.
 
     A release is signed with the key of its own minor, so only a .0 has a
     successor whose key does not exist yet.  A series whose .0 never went
@@ -393,22 +394,34 @@ def missing_signing_key(version, force_new_version):
     if patch != '0' and not force_new_version:
         return ''
     name = 'fuse-%s.%d' % (major, int(minor) + 1)
-    if (REPO_ROOT / 'signify' / (name + '.pub')).exists():
+    if (root / 'signify' / (name + '.pub')).exists():
         return ''
     return name
 
 
-def signing_key_commands(name):
-    """Return the commands that generate a signing key and stage its .pub."""
+def signing_key_commands(root, name):
+    """Return the commands that put a signing key in a release checkout.
+
+    The pair is generated where the script runs.  That signify/ keeps the
+    .sec every release of the minor signs with, and a release checkout of
+    another branch is thrown away after the release.
+    """
     public = REPO_ROOT / 'signify' / (name + '.pub')
     secret = REPO_ROOT / 'signify' / (name + '.sec')
-    return [['signify-openbsd', '-G', '-n', '-p', str(public), '-s', str(secret)],
-            ['git', 'add', str(public)]]
+    commands = []
+    if not public.exists():
+        commands.append(['signify-openbsd', '-G', '-n',
+                         '-p', str(public), '-s', str(secret)])
+    if root != REPO_ROOT:
+        commands.append(['cp', str(public), str(root / 'signify')])
+    commands.append(['git', '-C', str(root), 'add',
+                     str(root / 'signify' / (name + '.pub'))])
+    return commands
 
 
-def create_signing_key(name):
-    """Generate a signing key and stage its public half."""
-    for argv in signing_key_commands(name):
+def create_signing_key(root, name):
+    """Put a signing key in a release checkout and stage its public half."""
+    for argv in signing_key_commands(root, name):
         run(argv)
     print('signify: %s.sec is gitignored, back it up' % name)
 
@@ -655,9 +668,63 @@ def require_workflow_passed(dry_run, branch, commit):
         stop('the release workflow has not passed')
 
 
+def add_worktree(branch):
+    """Check a branch out on its own, and return where.
+
+    A release branch need not carry release.py at all, so checking it out in
+    the checkout the script runs from would take the script away mid-release.
+    """
+    root = Path(tempfile.mkdtemp(prefix='fuse-release-')) / 'checkout'
+    run(['git', 'worktree', 'add', str(root), branch])
+    return root
+
+
+def remove_worktree(root):
+    """Take a checkout added for one release back out.
+
+    Whatever is left in it is thrown away.  A release that ended early wrote
+    only into this checkout, and a failure here would hide why it ended.
+    """
+    run(['git', 'worktree', 'remove', '--force', str(root)])
+    remove_path(root.parent)
+
+
+def prepare_checkout(args):
+    """Return the checkout to prepare a release in and the branch it has out.
+
+    Without --branch that is the checkout the script runs in.  With it the
+    branch is brought up to what the remote has it at first, so the release
+    is cut on the commit everyone else can see.
+    """
+    if args.branch is None:
+        return REPO_ROOT, git('rev-parse', '--abbrev-ref', 'HEAD')
+    if not succeeds(['git', 'rev-parse', '-q', '--verify',
+                     'refs/heads/' + args.branch]):
+        fail('no such branch: ' + args.branch)
+    remote_commit = remote_branch_commit(args.remote, args.branch)
+    if remote_commit != '' and remote_commit != git('rev-parse', 'refs/heads/'
+                                                    + args.branch):
+        update_argv = branch_update_commands(args.remote, args.branch, False)
+        if required_step(args.dry_run,
+                         'Update %s from %s:' % (args.branch, args.remote),
+                         shown(update_argv)):
+            run(update_argv)
+    return add_worktree(args.branch), args.branch
+
+
 def cmd_prepare(args):
-    """Make the "Released ..." commit the release pull request carries."""
-    require_clean_worktree()
+    """Make the "Released ..." commit, in the checkout that release needs."""
+    root, branch = prepare_checkout(args)
+    try:
+        prepare_commit(args, root, branch)
+    finally:
+        if root != REPO_ROOT:
+            remove_worktree(root)
+
+
+def prepare_commit(args, root, branch):
+    """Write what a release changes in one checkout, and commit it there."""
+    require_clean_worktree(root)
     version = args.version
     if re.fullmatch(r'\d+\.\d+\.\d+', version) is None:
         fail('version must be MAJOR.MINOR.PATCH, got ' + version)
@@ -668,14 +735,15 @@ def cmd_prepare(args):
 
     # Everything that can refuse the release runs before the first edit.  A
     # refused one leaves no half-prepared tree behind.
-    old_version = read_version()
-    unreleased_index, unreleased_heading = find_unreleased_heading()
-    key_name = missing_signing_key(version, args.force_new_version)
+    old_version = read_version(root)
+    unreleased_index, unreleased_heading = find_unreleased_heading(root)
+    key_name = missing_signing_key(root, version, args.force_new_version)
     if key_name != '':
         require_tool('signify-openbsd')
-    added = new_authors(prev_tag)
+    added = new_authors(root, branch, prev_tag)
     today = date.today().isoformat()
-    commit_argv = ['git', 'commit', '-s', '--all', '-m', 'Released ' + tag]
+    commit_argv = ['git', '-C', str(root), 'commit', '-s', '--all',
+                   '-m', 'Released ' + tag]
 
     print("meson.build:   version: '%s' -> version: '%s'"
           % (old_version, version))
@@ -687,7 +755,7 @@ def cmd_prepare(args):
         print('AUTHORS:       + ' + line)
     if key_name != '':
         print('signify:       ' + next_version_question(key_name))
-        for argv in signing_key_commands(key_name):
+        for argv in signing_key_commands(root, key_name):
             print('+ ' + shown(argv))
     print('+ ' + shown(commit_argv))
 
@@ -698,26 +766,29 @@ def cmd_prepare(args):
             stop('the next version is not ' + key_name)
 
     if not args.dry_run:
-        write_version(version)
-        close_changelog(unreleased_index, version, today)
+        write_version(root, version)
+        close_changelog(root, unreleased_index, version, today)
         if len(added) > 0:
-            extend_authors(prev_tag, added)
+            extend_authors(root, prev_tag, added)
         if key_name != '':
-            create_signing_key(key_name)
+            create_signing_key(root, key_name)
         run(commit_argv)
 
-    branch = git('rev-parse', '--abbrev-ref', 'HEAD')
     push_argv = ['git', 'push', args.remote, branch]
     if step(args.dry_run, 'Push the release branch:', shown(push_argv)):
         run(push_argv)
 
     print('')
     print('Prepared %s on top of %s.' % (tag, prev_tag))
-    print('Open the pull request:')
-    print('    ' + compare_url(args.base, branch))
-    print('Once it is merged:')
-    print('    git checkout ' + args.base)
-    print('    %s publish' % sys.argv[0])
+    if args.branch is None:
+        print('Open the pull request:')
+        print('    ' + compare_url(args.base, branch))
+        print('Once it is merged:')
+        print('    git checkout ' + args.base)
+        print('    %s publish' % sys.argv[0])
+    else:
+        print('Once it is pushed:')
+        print('    %s publish --branch %s' % (sys.argv[0], branch))
     if args.dry_run:
         print('')
         print('nothing was changed')
@@ -910,6 +981,11 @@ Run this on the branch whose pull request carries the release.
 The push of that branch is offered and can be skipped.  Opening the pull
 request and merging it are done by hand, and the URL is printed.
 
+--branch commits the release to another branch instead, which is brought
+up to the remote and checked out on its own.  A maintenance release is
+cut that way: the branch keeps neither release.py nor a pull request, and
+master stays checked out.
+
 A .0 release generates the next minor's signing key, and asks first
 whether that is going to be the next version.  --force-new-version
 generates it in a patch release too, for a series whose .0 never went
@@ -961,6 +1037,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         help='make the "Released ..." commit')
     prepare.add_argument('version', help='release version, X.Y.Z')
+    prepare.add_argument('--branch',
+                         help='branch to commit the release to, checked out on'
+                              ' its own (default: the checked-out branch)')
     prepare.add_argument('--remote', default='origin',
                          help='remote to push the branch to (default: origin)')
     prepare.add_argument('--base', default='master',
