@@ -364,20 +364,19 @@ def signify_key_name(tag):
     return tag.rsplit('.', 1)[0]
 
 
-def missing_signing_keys(version):
-    """Return the next release's key basenames whose public half is absent.
+def missing_signing_key(version):
+    """Return the next minor's key basename, empty when the checkout has it.
 
-    Both successors are returned.  X.Y.0 is followed by X.<Y+1>.0 or by
-    <X+1>.0.0, and the tarball has to carry the key of whichever it becomes.
+    A release is signed with the key of its own minor, so only a .0 has a
+    successor whose key does not exist yet.
     """
-    major, minor = version.split('.')[:2]
-    names = ['fuse-%s.%d' % (major, int(minor) + 1),
-             'fuse-%d.0' % (int(major) + 1)]
-    missing = []
-    for name in names:
-        if not (REPO_ROOT / 'signify' / (name + '.pub')).exists():
-            missing.append(name)
-    return missing
+    major, minor, patch = version.split('.')
+    if patch != '0':
+        return ''
+    name = 'fuse-%s.%d' % (major, int(minor) + 1)
+    if (REPO_ROOT / 'signify' / (name + '.pub')).exists():
+        return ''
+    return name
 
 
 def signing_key_commands(name):
@@ -652,14 +651,8 @@ def cmd_prepare(args):
     # refused one leaves no half-prepared tree behind.
     old_version = read_version()
     find_unreleased_heading()
-    missing_keys = missing_signing_keys(version)
-    # A patch release inherits the keys its .0 generated.  A missing one may
-    # be published already.  A second key of that name looks the same to
-    # whoever verifies with the first.
-    if missing_keys and version.split('.')[2] != '0' and not args.new_key:
-        fail('signify/%s.pub is missing; restore the backup, or pass --new-key'
-             ' to generate a new key' % missing_keys[0])
-    if missing_keys:
+    key_name = missing_signing_key(version)
+    if key_name != '':
         require_tool('signify-openbsd')
     added = new_authors(prev_tag)
     today = date.today().isoformat()
@@ -673,7 +666,7 @@ def cmd_prepare(args):
         print('AUTHORS:       no new authors since ' + prev_tag)
     for line in added:
         print('AUTHORS:       + ' + line)
-    for key_name in missing_keys:
+    if key_name != '':
         for argv in signing_key_commands(key_name):
             print('+ ' + shown(argv))
     print('+ ' + shown(commit_argv))
@@ -682,7 +675,7 @@ def cmd_prepare(args):
         close_changelog(version, today)
         if len(added) > 0:
             extend_authors(prev_tag, added)
-        for key_name in missing_keys:
+        if key_name != '':
             create_signing_key(key_name)
         run(commit_argv)
 
@@ -868,7 +861,7 @@ def cmd_publish(args):
 
 STEPS = """\
 Step 1  release.py prepare X.Y.Z  commit the version, ChangeLog, AUTHORS
-                                  and the keys of the next release
+                                  and the key of the next release
 Step 2                            get that pull request merged
 Step 3  release.py publish        pack, test, tag, sign and push it
 Step 4                            create the GitHub release
@@ -882,7 +875,7 @@ Details: dev-docs/release-process.md
 
 PREPARE_HELP = """\
 Set the version in meson.build, close the Unreleased Changes section of
-ChangeLog.rst, add the new authors to AUTHORS, generate the signing keys
+ChangeLog.rst, add the new authors to AUTHORS, generate the signing key
 the next release needs, and commit all of it as "Released fuse-<version>".
 Run this on the branch whose pull request carries the release.
 
@@ -940,9 +933,6 @@ def main():
     prepare.add_argument('--base', default='master',
                          help='branch the pull request merges into'
                               ' (default: master)')
-    prepare.add_argument('--new-key', action='store_true',
-                         help='generate a missing next-release key in a patch'
-                              ' release')
     prepare.set_defaults(func=cmd_prepare)
 
     tarball = commands.add_parser(

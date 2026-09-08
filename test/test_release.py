@@ -321,5 +321,31 @@ class Reading(unittest.TestCase):
         self.assertEqual(release.signify_key_name(TAG), 'fuse-3.18')
 
 
+class SigningKey(unittest.TestCase):
+    """Which key a release has to generate before it is cut."""
+
+    def setUp(self):
+        base = tempfile.TemporaryDirectory()
+        self.addCleanup(base.cleanup)
+        (Path(base.name) / 'signify').mkdir()
+        self.root = Path(base.name)
+        self.addCleanup(setattr, release, 'REPO_ROOT', release.REPO_ROOT)
+        release.REPO_ROOT = self.root
+
+    def carry(self, name):
+        """Put a key's public half in the checkout, as a release commit does."""
+        (self.root / 'signify' / (name + '.pub')).write_text('untrusted\n')
+
+    def test_a_patch_release_generates_nothing(self):
+        self.assertEqual(release.missing_signing_key(VERSION), '')
+
+    def test_a_minor_release_generates_the_next_minor(self):
+        self.assertEqual(release.missing_signing_key('3.19.0'), 'fuse-3.20')
+
+    def test_a_key_the_checkout_carries_is_not_generated_again(self):
+        self.carry('fuse-3.20')
+        self.assertEqual(release.missing_signing_key('3.19.0'), '')
+
+
 if __name__ == '__main__':
     unittest.main()

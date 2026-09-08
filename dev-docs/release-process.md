@@ -12,8 +12,8 @@ Step 1 -- prepare the release commit
 * Sets the version in `meson.build`.
 * Renames the `Unreleased Changes` section of `ChangeLog.rst` to this release.
 * Appends every author who is not in `AUTHORS` yet.
-* Generates a signing key only when the next release has none, which is a new
-  minor or major version. A patch release inherits the keys of its `.0`.
+* Generates the next minor's signing key when a `.0` release does not carry it
+  yet. A patch release is signed with the key of its own minor.
 * Leaves one commit, `Released fuse-X.Y.Z`.
 * Offers to push the branch, and prints the URL that opens a pull request for
   it. `--remote` names the remote it is pushed to, `origin` by default.
@@ -143,8 +143,7 @@ Signing keys
 
 * `signify/fuse-<major>.<minor>.sec` signs every release of that minor and is
   gitignored -- back it up.
-* `prepare X.Y.0` generates the keys of `X.<Y+1>` and `<X+1>.0` and commits
-  their `.pub`, so this release carries the key of whichever comes next.
-* `prepare X.Y.Z` refuses when one of them is gone: it may be published
-  already, and a second key of that name is indistinguishable to whoever
-  verifies with the first. `--new-key` generates it anyway.
+* `prepare X.Y.0` generates the key of `X.<Y+1>` and commits its `.pub`, so
+  this release carries the key the next one is signed with.
+* `prepare X.Y.Z` generates nothing. `X.Y.Z+1` is signed with the key of
+  `X.Y`, which the `.0` carried already.
