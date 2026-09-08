@@ -297,13 +297,16 @@ def is_unreleased_heading(line):
 
 
 def find_unreleased_heading(root):
-    """Return the ChangeLog.rst line index and text of the open section."""
+    """Return the line index and text of the open section, -1 when it has none.
+
+    Whether a closed section is the release being cut or a ChangeLog.rst
+    nobody opened is the caller's to tell apart.
+    """
     lines = (root / 'ChangeLog.rst').read_text().splitlines()
     for index in range(len(lines) - 1):
         if is_unreleased_heading(lines[index]) and is_rst_underline(lines[index + 1]):
             return index, lines[index]
-    fail('ChangeLog.rst has neither a "%s" section nor an unreleased version'
-         ' heading' % UNRELEASED_HEADING)
+    return -1, ''
 
 
 def changelog_heading(version, today):
@@ -658,6 +661,14 @@ def branch_update_commands(remote, branch, checked_out):
     return ['git', 'fetch', remote, '%s:%s' % (branch, branch)]
 
 
+def publish_command(branch):
+    """Return the publish that releases what prepare left on a branch."""
+    argv = [sys.argv[0], 'publish']
+    if branch is not None:
+        argv.extend(['--branch', branch])
+    return shown(argv)
+
+
 def compare_url(base, branch):
     """Return the URL of the page that opens a pull request for a branch."""
     return '%s/compare/%s...%s?expand=1' % (REPO_URL, base, branch)
@@ -745,6 +756,15 @@ def prepare_commit(args, root, branch):
     # refused one leaves no half-prepared tree behind.
     old_version = read_version(root)
     unreleased_index, unreleased_heading = find_unreleased_heading(root)
+    # A branch that carries the release has the section closed and declares
+    # the version.  One re-opened for another backport declares it too, and
+    # is prepared again.
+    if unreleased_index < 0:
+        if old_version == version:
+            fail('%s carries %s already; publish it with\n    %s'
+                 % (branch, version, publish_command(args.branch)))
+        fail('ChangeLog.rst has neither a "%s" section nor an unreleased'
+             ' version heading' % UNRELEASED_HEADING)
     key_name = missing_signing_key(root, version, args.force_new_version)
     if key_name != '':
         require_tools(['signify-openbsd'])
@@ -793,10 +813,10 @@ def prepare_commit(args, root, branch):
         print('    ' + compare_url(args.base, branch))
         print('Once it is merged:')
         print('    git checkout ' + args.base)
-        print('    %s publish' % sys.argv[0])
+        print('    ' + publish_command(args.branch))
     else:
         print('Once it is pushed:')
-        print('    %s publish --branch %s' % (sys.argv[0], branch))
+        print('    ' + publish_command(args.branch))
     if args.dry_run:
         print('')
         print('nothing was changed')

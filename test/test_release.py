@@ -37,6 +37,8 @@ OTHER_COMMIT = 'b' * 40
 TAG_OBJECT = 'c' * 40
 VERSION = '3.18.3'
 TAG = 'fuse-' + VERSION
+# What a release branch names its open section before the release goes out.
+RC_VERSION = VERSION + '-rc1'
 # What a checkout declares before prepare sets the version being released.
 DEVELOPMENT_VERSION = '3.19.0-rc0'
 
@@ -141,6 +143,8 @@ class ScriptCase(unittest.TestCase):
         # What the command asked for, and what a case says is not installed.
         self.wanted_tools = []
         self.missing_tools = []
+        # What the last call wrote to stderr, which is where fail() reports.
+        self.errors = ''
 
     def have_tools(self, names):
         """Answer the tool check the way a case says the machine looks."""
@@ -172,17 +176,21 @@ class ScriptCase(unittest.TestCase):
     def call(self, command, args):
         """Run one command and return what it printed."""
         printed = io.StringIO()
-        with redirect_stdout(printed), redirect_stderr(io.StringIO()):
+        errors = io.StringIO()
+        with redirect_stdout(printed), redirect_stderr(errors):
             command(args)
+        self.errors = errors.getvalue()
         return printed.getvalue()
 
     def call_exits(self, command, args, code):
         """Run one command that has to leave with a status of its own."""
         printed = io.StringIO()
-        with redirect_stdout(printed), redirect_stderr(io.StringIO()):
+        errors = io.StringIO()
+        with redirect_stdout(printed), redirect_stderr(errors):
             with self.assertRaises(SystemExit) as left:
                 command(args)
         self.assertEqual(left.exception.code, code)
+        self.errors = errors.getvalue()
         return printed.getvalue()
 
 
@@ -453,7 +461,7 @@ class SigningKey(ScriptCase):
 
 def unreleased_version_section(version):
     """Return the open section a release branch heads with its version."""
-    heading = 'libfuse %s-rc1 (unreleased)' % version
+    heading = 'libfuse %s (unreleased)' % version
     return '%s\n%s\n\n%s\n\n' % (heading, '=' * len(heading), CHANGE)
 
 
@@ -474,16 +482,19 @@ class UnreleasedHeading(ScriptCase):
         self.assertEqual(heading, release.UNRELEASED_HEADING)
 
     def test_an_unreleased_version_heading_is_found_too(self):
+        index, heading = self.find(unreleased_version_section(RC_VERSION)
+                                   + CHANGELOG)
+        self.assertEqual(index, 0)
+        self.assertEqual(heading, 'libfuse %s (unreleased)' % RC_VERSION)
+
+    def test_a_reopened_section_is_found_under_the_release_version(self):
         index, heading = self.find(unreleased_version_section(VERSION)
                                    + CHANGELOG)
         self.assertEqual(index, 0)
-        self.assertEqual(heading, 'libfuse %s-rc1 (unreleased)' % VERSION)
+        self.assertEqual(heading, 'libfuse %s (unreleased)' % VERSION)
 
-    def test_released_sections_alone_end_the_release(self):
-        with redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as left:
-                self.find(CHANGELOG)
-        self.assertEqual(left.exception.code, 1)
+    def test_released_sections_alone_are_no_open_section(self):
+        self.assertEqual(self.find(CHANGELOG), (-1, ''))
 
 
 class PrepareCase(ScriptCase):
@@ -556,6 +567,10 @@ class PrepareCase(ScriptCase):
         """Run a prepare that a no ends, which is not a failure."""
         return self.call_exits(release.cmd_prepare, self.args(**changes), 0)
 
+    def prepare_fails(self, **changes):
+        """Run a prepare that has to end with a non-zero status."""
+        return self.call_exits(release.cmd_prepare, self.args(**changes), 1)
+
     def asked_for(self, key_name):
         return release.next_version_question(key_name) in self.questions
 
@@ -599,21 +614,63 @@ class Changelog(PrepareCase):
 
     def test_an_unreleased_version_heading_is_closed_to_this_release(self):
         (self.root / 'ChangeLog.rst').write_text(
-            unreleased_version_section(VERSION) + CHANGELOG)
+            unreleased_version_section(RC_VERSION) + CHANGELOG)
         printed = self.prepare()
         closed = (self.root / 'ChangeLog.rst').read_text()
         self.assertIn('libfuse %s (' % VERSION, closed)
         self.assertNotIn('(unreleased)', closed)
         # The report names the heading the checkout carried, not the one
         # master would have had.
-        self.assertIn('libfuse %s-rc1 (unreleased) ->' % VERSION, printed)
+        self.assertIn('libfuse %s (unreleased) ->' % RC_VERSION, printed)
 
     def test_the_entries_below_the_heading_are_left_alone(self):
+        (self.root / 'ChangeLog.rst').write_text(
+            unreleased_version_section(RC_VERSION) + CHANGELOG)
+        self.prepare()
+        closed = (self.root / 'ChangeLog.rst').read_text()
+        self.assertEqual(release.changelog_section(VERSION, closed), CHANGE)
+
+
+class Prepared(PrepareCase):
+    """A release the branch carries already is not prepared a second time."""
+
+    def carry_the_release(self, root):
+        """Leave a checkout the way a release commit leaves it."""
+        (root / 'meson.build').write_text(MESON % VERSION)
+        (root / 'ChangeLog.rst').write_text(CHANGELOG)
+
+    def test_a_branch_that_carries_the_release_is_not_prepared_again(self):
+        self.carry_the_release(self.root)
+        self.prepare_fails()
+        self.assertIn('carries %s already' % VERSION, self.errors)
+        self.assertEqual(self.git.ran, [])
+
+    def test_the_publish_that_is_left_is_named(self):
+        worktree = self.use_worktree()
+        self.carry_the_release(worktree)
+        self.prepare_fails(branch=BRANCH)
+        self.assertIn('publish --branch ' + BRANCH, self.errors)
+
+    def test_the_closed_changelog_is_not_what_it_reports(self):
+        self.carry_the_release(self.root)
+        self.prepare_fails()
+        self.assertNotIn('ChangeLog.rst', self.errors)
+
+    def test_a_section_reopened_after_the_release_commit_is_prepared_again(self):
+        # A backport landed on the release branch and re-opened the section.
+        # meson.build still declares the version, which is not what decides.
+        (self.root / 'meson.build').write_text(MESON % VERSION)
         (self.root / 'ChangeLog.rst').write_text(
             unreleased_version_section(VERSION) + CHANGELOG)
         self.prepare()
         closed = (self.root / 'ChangeLog.rst').read_text()
-        self.assertEqual(release.changelog_section(VERSION, closed), CHANGE)
+        self.assertNotIn('(unreleased)', closed)
+        self.assertIn('libfuse %s (' % VERSION, closed)
+
+    def test_a_changelog_with_no_open_section_at_all_reports_the_changelog(self):
+        (self.root / 'ChangeLog.rst').write_text(CHANGELOG)
+        self.prepare_fails(version='3.18.4')
+        self.assertIn('ChangeLog.rst', self.errors)
 
 
 class PrepareBranch(PrepareCase):
