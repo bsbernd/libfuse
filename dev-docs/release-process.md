@@ -18,7 +18,7 @@ Step 1 -- prepare the release commit
 * Offers to push the branch, and prints the URL that opens a pull request for
   it. `--remote` names the remote it is pushed to, `origin` by default.
   `--base` names the branch that pull request merges into, `master` by
-  default.
+  default. `--force-new-version` is under Signing keys below.
 
 Step 2 -- get the pull request merged
 -------------------------------------
@@ -147,3 +147,8 @@ Signing keys
   this release carries the key the next one is signed with.
 * `prepare X.Y.Z` generates nothing. `X.Y.Z+1` is signed with the key of
   `X.Y`, which the `.0` carried already.
+* The key name is the next version, so `prepare` asks whether that is what it
+  is going to be. A no ends the release before anything is written.
+* `--force-new-version` generates the key in a patch release too. A series
+  whose `.0` never went out leaves its successor's key to the first patch
+  release that does go out.

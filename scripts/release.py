@@ -364,14 +364,21 @@ def signify_key_name(tag):
     return tag.rsplit('.', 1)[0]
 
 
-def missing_signing_key(version):
+def next_version_question(key_name):
+    """Return what prepare asks before it generates a signing key."""
+    return 'Is %s going to be the next version?' % key_name
+
+
+def missing_signing_key(version, force_new_version):
     """Return the next minor's key basename, empty when the checkout has it.
 
     A release is signed with the key of its own minor, so only a .0 has a
-    successor whose key does not exist yet.
+    successor whose key does not exist yet.  A series whose .0 never went
+    out leaves that key to the first patch release that does, which is what
+    force_new_version says.
     """
     major, minor, patch = version.split('.')
-    if patch != '0':
+    if patch != '0' and not force_new_version:
         return ''
     name = 'fuse-%s.%d' % (major, int(minor) + 1)
     if (REPO_ROOT / 'signify' / (name + '.pub')).exists():
@@ -651,7 +658,7 @@ def cmd_prepare(args):
     # refused one leaves no half-prepared tree behind.
     old_version = read_version()
     find_unreleased_heading()
-    key_name = missing_signing_key(version)
+    key_name = missing_signing_key(version, args.force_new_version)
     if key_name != '':
         require_tool('signify-openbsd')
     added = new_authors(prev_tag)
@@ -667,9 +674,17 @@ def cmd_prepare(args):
     for line in added:
         print('AUTHORS:       + ' + line)
     if key_name != '':
+        print('signify:       ' + next_version_question(key_name))
         for argv in signing_key_commands(key_name):
             print('+ ' + shown(argv))
     print('+ ' + shown(commit_argv))
+
+    # A key of the wrong name is one the next release is stuck with, so the
+    # name is agreed to before anything is written.
+    if key_name != '' and not args.dry_run:
+        if not confirm(next_version_question(key_name)):
+            stop('the next version is not ' + key_name)
+
     if not args.dry_run:
         write_version(version)
         close_changelog(version, today)
@@ -881,6 +896,11 @@ Run this on the branch whose pull request carries the release.
 
 The push of that branch is offered and can be skipped.  Opening the pull
 request and merging it are done by hand, and the URL is printed.
+
+A .0 release generates the next minor's signing key, and asks first
+whether that is going to be the next version.  --force-new-version
+generates it in a patch release too, for a series whose .0 never went
+out.
 """
 
 TARBALL_HELP = """\
@@ -933,6 +953,10 @@ def main():
     prepare.add_argument('--base', default='master',
                          help='branch the pull request merges into'
                               ' (default: master)')
+    prepare.add_argument('--force-new-version', action='store_true',
+                         help='generate the next minor\'s signing key in a'
+                              ' patch release, for a series whose .0 was'
+                              ' never released')
     prepare.set_defaults(func=cmd_prepare)
 
     tarball = commands.add_parser(
