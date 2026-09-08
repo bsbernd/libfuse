@@ -8,6 +8,7 @@ no repository, no remote, no GitHub, no doxygen and no signify.
 
 import importlib.util
 import io
+import subprocess
 import tempfile
 import unittest
 from argparse import Namespace
@@ -95,6 +96,8 @@ class FakeGit:
         self.remote_commit = (local_commit if remote_commit is None
                               else remote_commit)
         self.local_tag = local_tag
+        # The program a case says exits non-zero, e.g. a build that fails.
+        self.fails_at = ''
         self.ran = []
 
     def output(self, argv, cwd=None):
@@ -125,6 +128,8 @@ class FakeGit:
 
     def run(self, argv, cwd=None):
         self.ran.append(argv)
+        if self.fails_at != '' and argv[0] == self.fails_at:
+            raise subprocess.CalledProcessError(1, argv)
         # The fast-forward is what moves the local branch onto the commit the
         # remote has.  Everything cmd_publish() does afterwards reads that one.
         if argv[:2] == ['git', 'pull'] or argv[:2] == ['git', 'fetch']:
@@ -556,8 +561,16 @@ class PrepareCase(ScriptCase):
     def args(self, **changes):
         return self.options(
             Namespace(dry_run=False, version=VERSION, branch=None,
-                      remote=REMOTE, base='master', force_new_version=False),
+                      remote=REMOTE, base='master', skip_test=False,
+                      force_new_version=False),
             changes)
+
+    def build_index(self):
+        """Return where the build ran among the commands, -1 when it did not."""
+        for index in range(len(self.git.ran)):
+            if self.git.ran[index][0] == 'ninja':
+                return index
+        return -1
 
     def prepare(self, **changes):
         """Run a prepare and return what it printed."""
@@ -629,6 +642,43 @@ class Changelog(PrepareCase):
         self.prepare()
         closed = (self.root / 'ChangeLog.rst').read_text()
         self.assertEqual(release.changelog_section(VERSION, closed), CHANGE)
+
+
+class BuildBeforeCommitting(PrepareCase):
+    """The branch is built before the release commit is written."""
+
+    def test_the_build_runs_and_the_commit_comes_after_it(self):
+        self.prepare()
+        index = self.build_index()
+        self.assertNotEqual(index, -1)
+        # Nothing was committed or pushed while the build was still to come.
+        for argv in self.git.ran[:index]:
+            self.assertNotIn('commit', argv)
+            self.assertNotIn('push', argv)
+
+    def test_the_build_has_warnings_fatal(self):
+        self.prepare()
+        setup = ['meson', 'setup', '-Dwerror=true',
+                 str(Path(release.OUTPUT_DIR) / 'prepare-build'),
+                 str(self.root)]
+        self.assertIn(setup, self.git.ran)
+
+    def test_a_failing_build_writes_nothing(self):
+        self.git.fails_at = 'ninja'
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.prepare()
+        self.assertEqual(release.read_version(self.root), DEVELOPMENT_VERSION)
+        self.assertIn(release.UNRELEASED_HEADING,
+                      (self.root / 'ChangeLog.rst').read_text())
+
+    def test_skip_test_leaves_the_build_out(self):
+        self.prepare(skip_test=True)
+        self.assertEqual(self.build_index(), -1)
+        self.assertEqual(self.wanted_tools, [])
+
+    def test_the_build_tools_are_checked_up_front(self):
+        self.prepare()
+        self.assertEqual(self.wanted_tools, ['meson', 'ninja'])
 
 
 class Prepared(PrepareCase):

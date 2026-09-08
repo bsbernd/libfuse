@@ -16,6 +16,13 @@ Step 1 -- prepare the release commit
 * Appends every author who is not in `AUTHORS` yet.
 * Generates the next minor's signing key when a `.0` release does not carry it
   yet. A patch release is signed with the key of its own minor.
+* Builds the branch with `meson setup -Dwerror=true` and `ninja` before it
+  writes any of that, in `/var/tmp/fuse-release/prepare-build`. A branch that
+  does not build gets no release commit, and the build directory is left
+  behind with its `meson-logs/`. `--skip-test` leaves the build out.
+* `meson.build` asks for `warning_level=2` only, so `-Dwerror=true` is what
+  turns a warning into a failed release. It is the same switch
+  `test/ci-build.sh` sets for the tarball build in Step 3.
 * Leaves one commit, `Released fuse-X.Y.Z`.
 * Offers to push the branch, and prints the URL that opens a pull request for
   it. `--remote` names the remote it is pushed to, `origin` by default.

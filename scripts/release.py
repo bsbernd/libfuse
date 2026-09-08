@@ -499,6 +499,32 @@ def build_tarball(commit, output_dir):
     return output_dir / (tarball_name + '.tar.gz')
 
 
+def checkout_test_commands(root, build_dir):
+    """Return the commands that build a checkout with warnings fatal.
+
+    meson.build asks for warning_level=2 and nothing more, so -Dwerror=true
+    is what makes a warning end the release instead of the release tarball.
+    """
+    return [['meson', 'setup', '-Dwerror=true', str(build_dir), str(root)],
+            ['ninja', '-C', str(build_dir)]]
+
+
+def checkout_test_plan(root, build_dir):
+    """Return what building a checkout does, as shell commands."""
+    lines = ['rm -rf ' + str(build_dir)]
+    for argv in checkout_test_commands(root, build_dir):
+        lines.append(shown(argv))
+    return lines
+
+
+def test_checkout(root, build_dir):
+    """Build a checkout, and fail the release when it does not build."""
+    remove_path(build_dir)
+    build_dir.parent.mkdir(parents=True, exist_ok=True)
+    for argv in checkout_test_commands(root, build_dir):
+        run(argv)
+
+
 def ci_build_argv(work_dir):
     """Return the command that builds and tests an unpacked tarball."""
     argv = ['test/ci-build.sh', '--name', 'release']
@@ -766,8 +792,12 @@ def prepare_commit(args, root, branch):
         fail('ChangeLog.rst has neither a "%s" section nor an unreleased'
              ' version heading' % UNRELEASED_HEADING)
     key_name = missing_signing_key(root, version, args.force_new_version)
+    tools = []
+    if not args.skip_test:
+        tools.extend(['meson', 'ninja'])
     if key_name != '':
-        require_tools(['signify-openbsd'])
+        tools.append('signify-openbsd')
+    require_tools(tools)
     added = new_authors(root, branch, prev_tag)
     today = date.today().isoformat()
     commit_argv = ['git', '-C', str(root), 'commit', '-s', '--all',
@@ -792,6 +822,14 @@ def prepare_commit(args, root, branch):
     if key_name != '' and not args.dry_run:
         if not confirm(next_version_question(key_name)):
             stop('the next version is not ' + key_name)
+
+    # The last refusal, and the slow one, so every question is answered
+    # before it starts.  A branch that does not build gets no release commit.
+    build_dir = Path(OUTPUT_DIR) / 'prepare-build'
+    if not args.skip_test:
+        if required_step(args.dry_run, 'Build %s, warnings fatal:' % branch,
+                         *checkout_test_plan(root, build_dir)):
+            test_checkout(root, build_dir)
 
     if not args.dry_run:
         write_version(root, version)
@@ -1008,6 +1046,10 @@ whether it is headed Unreleased Changes or "libfuse <version>
 the next release needs, and commit all of it as "Released fuse-<version>".
 Run this on the branch whose pull request carries the release.
 
+The branch is built with -Dwerror=true before the first of those is
+written, so a branch that does not build gets no release commit.
+--skip-test leaves that out.
+
 The push of that branch is offered and can be skipped.  Opening the pull
 request and merging it are done by hand, and the URL is printed.
 
@@ -1076,6 +1118,9 @@ def main():
     prepare.add_argument('--base', default='master',
                          help='branch the pull request merges into'
                               ' (default: master)')
+    prepare.add_argument('--skip-test', action='store_true',
+                         help='do not build the branch before committing the'
+                              ' release')
     prepare.add_argument('--force-new-version', action='store_true',
                          help='generate the next minor\'s signing key in a'
                               ' patch release, for a series whose .0 was'
