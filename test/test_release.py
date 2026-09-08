@@ -378,6 +378,40 @@ class SigningKey(ScriptCase):
                          'fuse-3.20')
 
 
+def unreleased_version_section(version):
+    """Return the open section a release branch heads with its version."""
+    heading = 'libfuse %s-rc1 (unreleased)' % version
+    return '%s\n%s\n\n%s\n\n' % (heading, '=' * len(heading), CHANGE)
+
+
+class UnreleasedHeading(ScriptCase):
+    """Which ChangeLog.rst heading names the section a release closes."""
+
+    def setUp(self):
+        self.root = self.checkout()
+
+    def find(self, changelog):
+        (self.root / 'ChangeLog.rst').write_text(changelog)
+        return release.find_unreleased_heading()
+
+    def test_the_unreleased_changes_heading_is_found(self):
+        index, heading = self.find(UNRELEASED + CHANGELOG)
+        self.assertEqual(index, 0)
+        self.assertEqual(heading, release.UNRELEASED_HEADING)
+
+    def test_an_unreleased_version_heading_is_found_too(self):
+        index, heading = self.find(unreleased_version_section(VERSION)
+                                   + CHANGELOG)
+        self.assertEqual(index, 0)
+        self.assertEqual(heading, 'libfuse %s-rc1 (unreleased)' % VERSION)
+
+    def test_released_sections_alone_end_the_release(self):
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as left:
+                self.find(CHANGELOG)
+        self.assertEqual(left.exception.code, 1)
+
+
 class PrepareCase(ScriptCase):
     """A cmd_prepare() run against a checkout of the files it edits."""
 
@@ -458,6 +492,28 @@ class NextVersionKey(PrepareCase):
         self.assertEqual(self.questions, [])
         self.assertEqual(self.generated, [])
         self.assertEqual(release.read_version(), DEVELOPMENT_VERSION)
+
+
+class Changelog(PrepareCase):
+    """prepare closes the section the checkout has open, however it is named."""
+
+    def test_an_unreleased_version_heading_is_closed_to_this_release(self):
+        (self.root / 'ChangeLog.rst').write_text(
+            unreleased_version_section(VERSION) + CHANGELOG)
+        printed = self.prepare()
+        closed = (self.root / 'ChangeLog.rst').read_text()
+        self.assertIn('libfuse %s (' % VERSION, closed)
+        self.assertNotIn('(unreleased)', closed)
+        # The report names the heading the checkout carried, not the one
+        # master would have had.
+        self.assertIn('libfuse %s-rc1 (unreleased) ->' % VERSION, printed)
+
+    def test_the_entries_below_the_heading_are_left_alone(self):
+        (self.root / 'ChangeLog.rst').write_text(
+            unreleased_version_section(VERSION) + CHANGELOG)
+        self.prepare()
+        closed = (self.root / 'ChangeLog.rst').read_text()
+        self.assertEqual(release.changelog_section(VERSION, closed), CHANGE)
 
 
 if __name__ == '__main__':

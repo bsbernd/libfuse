@@ -269,19 +269,32 @@ def write_version(version):
 
 UNRELEASED_HEADING = 'Unreleased Changes'
 
+# A release branch heads its open section with the version it is going to be
+# instead, e.g. "libfuse 3.18.3-rc1 (unreleased)".
+UNRELEASED_VERSION_HEADING = re.compile(r'^libfuse\s+\S+\s+\(unreleased\)$',
+                                        re.IGNORECASE)
+
 
 def is_rst_underline(line):
     """Return whether a line is the '=' rule below a heading."""
     return line != '' and line == '=' * len(line)
 
 
+def is_unreleased_heading(line):
+    """Return whether a heading names the section this release closes."""
+    if line == UNRELEASED_HEADING:
+        return True
+    return UNRELEASED_VERSION_HEADING.match(line) is not None
+
+
 def find_unreleased_heading():
-    """Return the ChangeLog.rst line index of the Unreleased Changes heading."""
+    """Return the ChangeLog.rst line index and text of the open section."""
     lines = (REPO_ROOT / 'ChangeLog.rst').read_text().splitlines()
     for index in range(len(lines) - 1):
-        if lines[index] == UNRELEASED_HEADING and is_rst_underline(lines[index + 1]):
-            return index
-    fail('ChangeLog.rst has no "%s" section' % UNRELEASED_HEADING)
+        if is_unreleased_heading(lines[index]) and is_rst_underline(lines[index + 1]):
+            return index, lines[index]
+    fail('ChangeLog.rst has neither a "%s" section nor an unreleased version'
+         ' heading' % UNRELEASED_HEADING)
 
 
 def changelog_heading(version, today):
@@ -289,9 +302,8 @@ def changelog_heading(version, today):
     return 'libfuse %s (%s)' % (version, today)
 
 
-def close_changelog(version, today):
-    """Rename the Unreleased Changes heading to the one of this release."""
-    index = find_unreleased_heading()
+def close_changelog(index, version, today):
+    """Rename the heading of the open section to the one of this release."""
     path = REPO_ROOT / 'ChangeLog.rst'
     lines = path.read_text().splitlines()
     heading = changelog_heading(version, today)
@@ -657,7 +669,7 @@ def cmd_prepare(args):
     # Everything that can refuse the release runs before the first edit.  A
     # refused one leaves no half-prepared tree behind.
     old_version = read_version()
-    find_unreleased_heading()
+    unreleased_index, unreleased_heading = find_unreleased_heading()
     key_name = missing_signing_key(version, args.force_new_version)
     if key_name != '':
         require_tool('signify-openbsd')
@@ -668,7 +680,7 @@ def cmd_prepare(args):
     print("meson.build:   version: '%s' -> version: '%s'"
           % (old_version, version))
     print('ChangeLog.rst: %s -> %s'
-          % (UNRELEASED_HEADING, changelog_heading(version, today)))
+          % (unreleased_heading, changelog_heading(version, today)))
     if len(added) == 0:
         print('AUTHORS:       no new authors since ' + prev_tag)
     for line in added:
@@ -687,7 +699,7 @@ def cmd_prepare(args):
 
     if not args.dry_run:
         write_version(version)
-        close_changelog(version, today)
+        close_changelog(unreleased_index, version, today)
         if len(added) > 0:
             extend_authors(prev_tag, added)
         if key_name != '':
@@ -889,8 +901,9 @@ Details: dev-docs/release-process.md
 """
 
 PREPARE_HELP = """\
-Set the version in meson.build, close the Unreleased Changes section of
-ChangeLog.rst, add the new authors to AUTHORS, generate the signing key
+Set the version in meson.build, close the open section of ChangeLog.rst,
+whether it is headed Unreleased Changes or "libfuse <version>
+(unreleased)", add the new authors to AUTHORS, generate the signing key
 the next release needs, and commit all of it as "Released fuse-<version>".
 Run this on the branch whose pull request carries the release.
 

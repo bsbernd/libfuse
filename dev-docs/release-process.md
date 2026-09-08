@@ -10,7 +10,9 @@ Step 1 -- prepare the release commit
 
 * `scripts/release.py prepare X.Y.Z`
 * Sets the version in `meson.build`.
-* Renames the `Unreleased Changes` section of `ChangeLog.rst` to this release.
+* Renames the open section of `ChangeLog.rst` to this release. Its heading is
+  `Unreleased Changes` on master, and `libfuse X.Y.Z-rcN (unreleased)` on a
+  release branch that named its version before it went out.
 * Appends every author who is not in `AUTHORS` yet.
 * Generates the next minor's signing key when a `.0` release does not carry it
   yet. A patch release is signed with the key of its own minor.
