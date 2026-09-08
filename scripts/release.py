@@ -613,16 +613,17 @@ def update_api_docs(tag, work, pages_dir):
 
 
 def release_branch(wanted):
-    """Return the branch to release and the commit it points at."""
-    current = git('rev-parse', '--abbrev-ref', 'HEAD')
-    if current == 'HEAD':
-        fail('HEAD is detached; check out the branch to release, or master')
-    # The signing keys are read from the checkout.  master carries all of
-    # them.
-    if wanted is not None and wanted != current and current != 'master':
-        fail('--branch %s needs master checked out, %s is checked out'
-             % (wanted, current))
-    branch = wanted or current
+    """Return the branch to release and the commit it points at.
+
+    Any checkout releases any branch.  What it has to carry is the signing
+    key of the release, which signing_key() reads and reports on its own.
+    """
+    branch = wanted
+    if branch is None:
+        branch = git('rev-parse', '--abbrev-ref', 'HEAD')
+        if branch == 'HEAD':
+            fail('HEAD is detached; check out the branch to release, or name'
+                 ' it with --branch')
     if not succeeds(['git', 'rev-parse', '-q', '--verify',
                      'refs/heads/' + branch]):
         fail('no such branch: ' + branch)
@@ -1024,8 +1025,9 @@ release with nothing to take back.
 The version and the ChangeLog are read out of the branch that is
 released, --branch or the checked-out one.  That branch has to point at
 the same commit as its counterpart on the remote, and a fast-forward to
-it is offered when it does not.  Releasing another branch than the
-checked-out one needs master, which carries the keys.
+it is offered when it does not.  The signing key is read from the
+checkout, which is why a release branch is released from master or a
+branch of it rather than from itself.
 """
 
 
@@ -1083,8 +1085,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         help='tag, sign and publish the prepared release')
     publish.add_argument('--branch',
-                         help='branch to release, master checked out'
-                              ' (default: the checked-out branch)')
+                         help='branch to release, from a checkout that carries'
+                              ' the signing key (default: the checked-out'
+                              ' branch)')
     publish.add_argument('--remote', default='origin',
                          help='remote to push the tag to (default: origin)')
     publish.add_argument('--output-dir', default=OUTPUT_DIR,

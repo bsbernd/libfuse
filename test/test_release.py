@@ -28,6 +28,8 @@ release = load_release()
 
 REMOTE = 'origin'
 BRANCH = 'fuse-3.18.x'
+# A branch of master, which is where a release is published from.
+WORK_BRANCH = 'release-tooling'
 COMMIT = 'a' * 40
 OTHER_COMMIT = 'b' * 40
 # An annotated tag's own object.  ls-remote reports it for refs/tags/<tag>,
@@ -82,6 +84,9 @@ class FakeGit:
     def __init__(self, remote_tag_rows='', local_commit=COMMIT,
                  remote_commit=None, local_tag=False):
         self.remote_tag_rows = remote_tag_rows
+        # What HEAD has out, which is not the branch being released once a
+        # case says otherwise.  'HEAD' is a detached one.
+        self.head_branch = BRANCH
         self.local_commit = local_commit
         # The two are the same until a case says the remote is ahead.  Empty
         # is a remote without the branch at all.
@@ -93,7 +98,7 @@ class FakeGit:
     def output(self, argv, cwd=None):
         rest = argv[1:]
         if rest == ['rev-parse', '--abbrev-ref', 'HEAD']:
-            return BRANCH
+            return self.head_branch
         if rest == ['rev-parse', 'refs/heads/' + BRANCH]:
             return self.local_commit
         if rest == ['rev-parse', TAG + '^{commit}']:
@@ -313,6 +318,27 @@ class Branch(PublishCase):
         self.publish_fails()
         self.assertEqual(self.git.ran, [])
         self.assertEqual(self.packed, [])
+
+
+class Checkout(PublishCase):
+    """Which checkout may release a branch."""
+
+    def test_a_branch_of_master_releases_another_branch(self):
+        self.git.head_branch = WORK_BRANCH
+        self.publish(branch=BRANCH)
+        self.assertIn(['git', 'tag', '-s', '-m', TAG, TAG, COMMIT],
+                      self.git.ran)
+
+    def test_a_detached_head_releases_the_branch_it_is_given(self):
+        self.git.head_branch = 'HEAD'
+        self.publish(branch=BRANCH)
+        self.assertIn(['git', 'tag', '-s', '-m', TAG, TAG, COMMIT],
+                      self.git.ran)
+
+    def test_a_detached_head_with_no_branch_named_fails(self):
+        self.git.head_branch = 'HEAD'
+        self.publish_fails()
+        self.assertEqual(self.git.ran, [])
 
 
 class RemoteTag(PublishCase):

@@ -36,8 +36,8 @@ Step 2 -- get the pull request merged
 * Open the pull request at the printed URL, and get it merged. Neither is
   scriptable without `gh`. A `--branch` release has none of this: its commit
   is on the branch already, and `prepare` offered the push.
-* `git checkout master`. `publish` reads the signing keys from the checkout,
-  so it releases another branch only from master.
+* `git checkout master`, or any branch of it. `publish` reads the signing keys
+  from the checkout, not from the branch it releases.
 * Pulling master is not needed. `publish` offers the fast-forward itself.
 
 Step 3 -- publish
@@ -62,9 +62,10 @@ Step 3 -- publish
   a repeated one cannot ship an earlier commit under the same version.
 * Released is the branch `--branch` names, the checked-out one by default. The
   version and the ChangeLog are read out of its commit, not out of the
-  checkout. Another branch than the checked-out one needs master checked out.
-  Every `signify/*.pub` is on master, a release branch only has the ones that
-  existed when it forked.
+  checkout. The signing key is read out of the checkout, and every
+  `signify/*.pub` is on master while a release branch only has the ones that
+  existed when it forked -- so run `publish` from master or a branch of it,
+  whatever branch it releases.
 * That branch has to point at what `origin` has it point at, so what is
   released is what everyone else can see.
 * A `fuse-X.Y.Z` tag `origin` carries already has to point at that same
