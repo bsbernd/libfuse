@@ -24,6 +24,7 @@ SOURCE_DIR = Path(__file__).resolve().parent.parent.parent
 WORKFLOW = SOURCE_DIR / '.github/workflows/pr-ci.yml'
 CI_BUILD = SOURCE_DIR / 'test/ci-build.sh'
 RUN_TESTS = SOURCE_DIR / 'test/run-tests.py'
+VM_RUN = SOURCE_DIR / 'test/ci/vm-run.sh'
 
 
 def load_matrix() -> list[dict]:
@@ -51,8 +52,12 @@ def load_matrix() -> list[dict]:
     return entries
 
 
-def ci_build_argv(entry: dict, work_dir: str) -> list[str]:
-    """Spell the ci-build.sh command line pr-ci.yml expands this entry to."""
+def ci_build_argv(entry: dict, work_dir: str | None) -> list[str]:
+    """Spell the ci-build.sh command line pr-ci.yml expands this entry to.
+
+    A work_dir of None leaves --work-dir off, for vm-run.sh to append: the
+    guest needs one of its own.
+    """
     argv = [str(CI_BUILD), '--name', entry['config'], '--cc', entry['cc']]
 
     cxx = entry.get('cxx')
@@ -69,8 +74,22 @@ def ci_build_argv(entry: dict, work_dir: str) -> list[str]:
     if entry.get('io_uring'):
         argv.append('--io-uring')
 
-    argv += ['--work-dir', work_dir]
+    if work_dir is not None:
+        argv += ['--work-dir', work_dir]
     return argv
+
+
+def vm_run_argv(kernel: str, logs_out: str, ci_argv: list[str]) -> list[str]:
+    """Wrap a ci-build.sh command line in a virtme-ng guest."""
+    return [str(VM_RUN), '--kernel', kernel,
+            '--logs-out', logs_out, '--'] + ci_argv
+
+
+def config_argv(entry: dict, work_dir: str, kernel: str | None) -> list[str]:
+    """The command line that runs one configuration."""
+    if kernel is None:
+        return ci_build_argv(entry, work_dir)
+    return vm_run_argv(kernel, work_dir, ci_build_argv(entry, None))
 
 
 def missing_tools(entry: dict) -> list[str]:
@@ -165,6 +184,18 @@ def main() -> int:
     parser.add_argument('-l', '--list', action='store_true',
                         help='print the command line of each configuration '
                              'and exit')
+    parser.add_argument('--kernel', default=None, metavar='KERNEL',
+                        help='run every configuration in a virtme-ng guest '
+                             'booting this kernel: "latest-rc" or "latest" '
+                             'for the newest release candidate or release in '
+                             'the Ubuntu mainline archive at '
+                             'kernel.ubuntu.com/mainline, an exact version '
+                             'from it ("v7.3-rc2"), a kernel deb or a '
+                             'directory of kernel debs, or the path of a '
+                             'kernel image or of a directory holding a '
+                             'kernel built from source. Archive kernels are '
+                             'downloaded once and cached under '
+                             '~/.cache/virtme-ng')
     parser.add_argument('--work-dir', default=None, metavar='DIR',
                         help='where to build and log; one directory for the '
                              'whole run, as ci-build.sh names its own '
@@ -181,7 +212,7 @@ def main() -> int:
 
     if args.list:
         for entry in entries:
-            print(' '.join(ci_build_argv(entry, work_dir)))
+            print(' '.join(config_argv(entry, work_dir, args.kernel)))
         return 0
 
     # test/ci/prepare-runner.sh is deliberately not run here: it rewrites
@@ -202,7 +233,8 @@ def main() -> int:
         log_path = Path(work_dir) / f'{name}.log'
         print(f'=== {name} ===')
         started = time.time()
-        returncode = run_and_tee(ci_build_argv(entry, work_dir), log_path)
+        returncode = run_and_tee(config_argv(entry, work_dir, args.kernel),
+                                 log_path)
         seconds = time.time() - started
 
         status = 'PASS' if returncode == 0 else 'FAIL'

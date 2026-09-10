@@ -25,6 +25,8 @@ Running it
 * `-c PATTERN` -- run only the configurations matching. fnmatch, repeatable.
 * `-X PATTERN` -- skip the configurations matching. fnmatch, repeatable.
 * `--list` -- print the command lines and exit, running nothing.
+* `--kernel KERNEL` -- run each configuration in a VM booting that kernel
+  instead of on this one. See README-kernel-vm-tests.md.
 * `--work-dir DIR` -- build and log there instead of the default below.
 
 ```
