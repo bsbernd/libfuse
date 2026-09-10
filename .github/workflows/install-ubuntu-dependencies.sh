@@ -15,6 +15,7 @@ PACKAGES_CORE=(
     pkg-config
     python3
     python3-pip
+    python3-yaml
     libsystemd-dev
     systemd-dev
 )
